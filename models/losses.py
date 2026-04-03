@@ -64,8 +64,9 @@ class STFTLoss(nn.Module):
         y_mag = torch.abs(y_stft)
         y_hat_mag = torch.abs(y_hat_stft)
 
-        # Spectral convergence
-        sc_loss = torch.norm(y_mag - y_hat_mag, p="fro") / (torch.norm(y_mag, p="fro") + 1e-8)
+        # Spectral convergence (per batch item, then averaged)
+        sc_loss = torch.norm(y_mag - y_hat_mag, p="fro", dim=(1, 2)) / (torch.norm(y_mag, p="fro", dim=(1, 2)) + 1e-8)
+        sc_loss = sc_loss.mean()
 
         # Log magnitude loss
         log_loss = F.l1_loss(torch.log(y_mag + 1e-8), torch.log(y_hat_mag + 1e-8))
@@ -93,28 +94,41 @@ class MultiResolutionSTFTLoss(nn.Module):
         return loss / len(self.stft_losses)
 
 
-def mel_spectrogram_loss(
-    y_hat: torch.Tensor,
-    y: torch.Tensor,
-    sample_rate: int = 192000,
-    n_fft: int = 4096,
-    hop_length: int = 480,
-    n_mels: int = 128,
-) -> torch.Tensor:
-    """L1 mel spectrogram loss for perceptual quality."""
-    if y.dim() == 3:
-        y = y.squeeze(1)
-        y_hat = y_hat.squeeze(1)
+class MelSpectrogramLoss(nn.Module):
+    """L1 mel spectrogram loss for perceptual quality.
 
-    mel_transform = torchaudio.transforms.MelSpectrogram(
-        sample_rate=sample_rate,
-        n_fft=n_fft,
-        hop_length=hop_length,
-        n_mels=n_mels,
-        f_max=sample_rate // 2,
-    ).to(y.device)
+    Instantiates the MelSpectrogram transform once in __init__ instead of
+    re-creating it every forward pass (avoids recomputing filterbanks on GPU).
+    """
 
-    y_mel = mel_transform(y)
-    y_hat_mel = mel_transform(y_hat)
+    def __init__(
+        self,
+        sample_rate: int = 192000,
+        n_fft: int = 4096,
+        hop_length: int = 480,
+        n_mels: int = 128,
+    ):
+        super().__init__()
+        self.mel_transform = torchaudio.transforms.MelSpectrogram(
+            sample_rate=sample_rate,
+            n_fft=n_fft,
+            hop_length=hop_length,
+            n_mels=n_mels,
+            f_max=sample_rate // 2,
+        )
 
-    return F.l1_loss(torch.log(y_hat_mel + 1e-8), torch.log(y_mel + 1e-8))
+    def forward(self, y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        if y.dim() == 3:
+            y = y.squeeze(1)
+            y_hat = y_hat.squeeze(1)
+
+        y_mel = self.mel_transform(y)
+        y_hat_mel = self.mel_transform(y_hat)
+
+        return F.l1_loss(torch.log(y_hat_mel + 1e-8), torch.log(y_mel + 1e-8))
+
+
+# Backwards-compatible function wrapper (deprecated)
+def mel_spectrogram_loss(y_hat, y, sample_rate=192000):
+    """Deprecated: use MelSpectrogramLoss module instead."""
+    return MelSpectrogramLoss(sample_rate=sample_rate).to(y.device)(y_hat, y)

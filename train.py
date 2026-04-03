@@ -32,7 +32,7 @@ from models import (
     discriminator_loss,
     feature_loss,
     generator_loss,
-    mel_spectrogram_loss,
+    MelSpectrogramLoss,
     MultiResolutionSTFTLoss,
 )
 from models.mastering_losses import MasteringLoss
@@ -138,6 +138,7 @@ def train(args):
 
     # Losses
     stft_loss_fn = MultiResolutionSTFTLoss().to(device)
+    mel_loss_fn = MelSpectrogramLoss(sample_rate=192000).to(device)
 
     # Mastering quality losses
     mastering_cfg = train_cfg.get("mastering", {})
@@ -248,7 +249,7 @@ def train(args):
 
             # Spectral losses
             loss_stft = stft_loss_fn(hr_hat, hr_audio)
-            loss_mel = mel_spectrogram_loss(hr_hat, hr_audio, sample_rate=192000)
+            loss_mel = mel_loss_fn(hr_hat, hr_audio)
 
             # Mastering quality losses
             loss_mastering, mastering_details = mastering_loss_fn(hr_hat, hr_audio)

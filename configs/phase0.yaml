@@ -51,6 +51,6 @@ gan:
       lambda_perceptual_stft: 45.0
       lambda_stereo: 10.0
       lambda_dynamics: 5.0
-      lambda_encodec: 10.0
+      lambda_encodec: 0.01      # Raw encodec loss is very large; keep lambda low
       lambda_audiobox_pq: 0.0
       lambda_clap: 0.0
