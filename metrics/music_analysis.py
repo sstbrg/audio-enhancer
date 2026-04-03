@@ -146,17 +146,23 @@ class MusicAnalyzer:
 
             results = {}
 
+            temperature = 10.0  # Sharpen the softmax distribution
+
             # Genre scores
-            genre_embeds = self._clap_model.get_text_embedding(genres, use_tensor=False)
+            genre_prompts = [f"this is {g} music" for g in genres]
+            genre_embeds = self._clap_model.get_text_embedding(genre_prompts, use_tensor=False)
             genre_sims = (audio_embed @ genre_embeds.T).squeeze()
-            genre_probs = np.exp(genre_sims) / np.exp(genre_sims).sum()
+            genre_logits = genre_sims * temperature
+            genre_probs = np.exp(genre_logits) / np.exp(genre_logits).sum()
             top_genres = sorted(zip(genres, genre_probs.tolist()), key=lambda x: -x[1])[:5]
             results["genre"] = {g: round(p, 3) for g, p in top_genres}
 
             # Mood scores
-            mood_embeds = self._clap_model.get_text_embedding(moods, use_tensor=False)
+            mood_prompts = [f"music that sounds {m}" for m in moods]
+            mood_embeds = self._clap_model.get_text_embedding(mood_prompts, use_tensor=False)
             mood_sims = (audio_embed @ mood_embeds.T).squeeze()
-            mood_probs = np.exp(mood_sims) / np.exp(mood_sims).sum()
+            mood_logits = mood_sims * temperature
+            mood_probs = np.exp(mood_logits) / np.exp(mood_logits).sum()
             top_moods = sorted(zip(moods, mood_probs.tolist()), key=lambda x: -x[1])[:5]
             results["mood"] = {m: round(p, 3) for m, p in top_moods}
 
@@ -222,10 +228,11 @@ class MusicAnalyzer:
                 x=audio_48k[np.newaxis, :], use_tensor=False
             )
 
-            inst_prompts = [f"music with {inst} playing" for inst in instruments]
+            inst_prompts = [f"a recording featuring {inst}" for inst in instruments]
             inst_embeds = self._clap_model.get_text_embedding(inst_prompts, use_tensor=False)
             inst_sims = (audio_embed @ inst_embeds.T).squeeze()
-            inst_probs = np.exp(inst_sims) / np.exp(inst_sims).sum()
+            inst_logits = inst_sims * 10.0
+            inst_probs = np.exp(inst_logits) / np.exp(inst_logits).sum()
 
             top_instruments = sorted(
                 zip(instruments, inst_probs.tolist()), key=lambda x: -x[1]
