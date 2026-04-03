@@ -18,18 +18,33 @@ warnings.filterwarnings("ignore")
 
 
 def _load_audio(path: str) -> tuple[np.ndarray, int]:
-    """Load audio from any format (WAV, FLAC, MP3, AAC, OGG, etc.)."""
+    """Load audio from any format (WAV, FLAC, MP3, AAC, OGG, WebM, etc.)."""
     try:
         data, sr = sf.read(path, dtype="float32", always_2d=True)
+        return data, sr
     except Exception:
-        # Fallback for MP3/AAC/OGG via librosa
+        pass
+
+    # Fallback for MP3/AAC/OGG/WebM via librosa (uses ffmpeg under the hood)
+    try:
         import librosa
-        mono, sr = librosa.load(path, sr=None, mono=False)
-        if mono.ndim == 1:
-            data = mono.reshape(-1, 1)
+        audio, sr = librosa.load(path, sr=None, mono=False)
+        if audio.ndim == 1:
+            data = audio.reshape(-1, 1)
         else:
-            data = mono.T  # (samples, channels)
-    return data, sr
+            data = audio.T  # (samples, channels)
+        return data, sr
+    except Exception:
+        pass
+
+    # Last resort: ffmpeg to temp wav
+    import subprocess, tempfile
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        subprocess.run(["ffmpeg", "-y", "-i", path, "-ar", "48000", "-ac", "2", tmp.name],
+                       capture_output=True, check=True)
+        data, sr = sf.read(tmp.name, dtype="float32", always_2d=True)
+        import os; os.unlink(tmp.name)
+        return data, sr
 
 
 def analyze_file_info(path: str) -> dict:
@@ -429,8 +444,8 @@ with gr.Blocks(
 
     with gr.Row():
         with gr.Column(scale=1):
-            audio_input = gr.Audio(label="Audio File", type="filepath")
-            ref_input = gr.Audio(label="Reference File (optional)", type="filepath")
+            audio_input = gr.File(label="Audio File", file_types=[".wav", ".flac", ".mp3", ".ogg", ".aac", ".aiff", ".m4a", ".wma", ".opus", ".webm"])
+            ref_input = gr.File(label="Reference File (optional)", file_types=[".wav", ".flac", ".mp3", ".ogg", ".aac", ".aiff", ".m4a", ".wma", ".opus", ".webm"])
             analyze_btn = gr.Button("Analyze", variant="primary", size="lg")
 
         with gr.Column(scale=2):
