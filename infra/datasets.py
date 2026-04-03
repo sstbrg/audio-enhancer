@@ -48,8 +48,8 @@ CATALOG = [
     Dataset("vctk",     "VCTK 96kHz (speech)",         "url",
             "https://datashare.ed.ac.uk/bitstream/handle/10283/2774/VCTK-Corpus-0.92.zip?sequence=2&isAllowed=y",
             20, "vctk96k.zip"),
-    Dataset("moisesdb", "MoisesDB (music stems)",      "python",
-            "download_moisesdb",
+    Dataset("moisesdb", "MoisesDB (music stems)",      "manual",
+            "https://developer.moises.ai/research",
             25, "moisesdb"),
     Dataset("gtsinger", "GTSinger (48kHz vocals)",     "huggingface",
             "GTSinger/GTSinger",
@@ -57,8 +57,8 @@ CATALOG = [
     Dataset("maestro",  "MAESTRO v3 (piano)",          "url",
             "https://storage.googleapis.com/magentadata/datasets/maestro/v3.0.0/maestro-v3.0.0.zip",
             120, "maestro-v3.0.0.zip"),
-    Dataset("medleydb", "MedleyDB v2 (pro recordings)","url",
-            "https://zenodo.org/records/1715175/files/MedleyDB-V2.zip?download=1",
+    Dataset("medleydb", "MedleyDB v2 (pro recordings)","manual",
+            "https://medleydb.weebly.com",
             30, "medleydb-v2.zip"),
     Dataset("musicnet", "MusicNet (classical)",        "url",
             "https://zenodo.org/records/5120004/files/musicnet.tar.gz?download=1",
@@ -207,6 +207,8 @@ def show_status():
         elif local_bytes > 0:
             pct = min(100, int(local_bytes * 100 / expected_bytes)) if expected_bytes > 0 else 0
             status = f"{C_RED}partial ({pct}%){C_NC}"
+        elif ds.source == "manual":
+            status = f"{C_DIM}manual download{C_NC}"
         else:
             status = f"{C_DIM}not downloaded{C_NC}"
 
@@ -243,6 +245,10 @@ def download_one(ds: Dataset):
     elif ds.source == "huggingface":
         from huggingface_hub import snapshot_download
         snapshot_download(ds.location, repo_type="dataset", local_dir=str(dest))
+
+    elif ds.source == "manual":
+        print(f"  {C_RED}Manual download required: {ds.location}{C_NC}")
+        return
 
     elif ds.source == "python":
         fn = CUSTOM_DOWNLOADERS[ds.location]
