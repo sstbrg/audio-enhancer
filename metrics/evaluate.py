@@ -146,7 +146,10 @@ class AudioMetrics:
                 from audiobox_aesthetics.infer import initialize_predictor
                 self._audiobox = initialize_predictor()
 
-            results = self._audiobox.forward([{"path": audio_path}])
+            # Load audio as tensor to bypass torchcodec (which needs libnppicc)
+            waveform = _load_audio_tensor(audio_path, 16000)
+            wav_tensor = waveform.unsqueeze(0)  # (1, samples)
+            results = self._audiobox.forward([{"path": wav_tensor, "sample_rate": 16000}])
             scores = results[0]  # {CE, CU, PC, PQ}
             return MetricResult("Audiobox Aesthetics", scores, higher_is_better=True,
                                 description="Production quality dimensions (0-10)")
