@@ -66,9 +66,9 @@ resource "google_compute_instance" "training" {
 
   boot_disk {
     initialize_params {
-      image = "deeplearning-platform-release/pytorch-latest-gpu"
+      image = "deeplearning-platform-release/pytorch-2-7-cu128-ubuntu-2404-nvidia-570"
       size  = var.disk_size_gb
-      type  = "pd-ssd"
+      type  = "pd-balanced"
     }
   }
 
@@ -79,8 +79,8 @@ resource "google_compute_instance" "training" {
 
   scheduling {
     on_host_maintenance = "TERMINATE" # Required for GPU instances
-    automatic_restart   = true
-    preemptible         = false
+    automatic_restart   = false
+    preemptible         = true        # Spot pricing (~70% cheaper)
   }
 
   network_interface {
