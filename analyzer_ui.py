@@ -554,6 +554,7 @@ with gr.Blocks(
     title="Audio Enhancer & Analyzer",
     theme=gr.themes.Soft(primary_hue="cyan"),
     css="""
+    .gradio-container { max-width: 80% !important; margin: 0 auto !important; }
     .report { font-family: 'Segoe UI', sans-serif; padding: 10px; }
     .report h3 { margin-bottom: 5px; }
     .report h3.section { color: #0088cc; }
