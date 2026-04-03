@@ -20,7 +20,7 @@ mkdir -p "$RAW_DIR"
 # ── Dataset catalog ───────────────────────────────────────────────────────────
 
 declare -A DS_NAME DS_URL DS_SIZE DS_FILE
-DATASETS=(egipt musdb vctk moisesdb)
+DATASETS=(egipt musdb vctk gtsinger maestro medleydb musicnet)
 
 DS_NAME[egipt]="EG-IPT (96kHz guitar)"
 DS_URL[egipt]="https://zenodo.org/records/15205644/files/EG-IPT.zip?download=1"
@@ -37,10 +37,25 @@ DS_URL[vctk]="https://datashare.ed.ac.uk/bitstream/handle/10283/2774/VCTK-Corpus
 DS_SIZE[vctk]=11
 DS_FILE[vctk]="vctk96k.zip"
 
-DS_NAME[moisesdb]="MoisesDB (music stems)"
-DS_URL[moisesdb]="hf:wearemusicai/moisesdb"
-DS_SIZE[moisesdb]=25
-DS_FILE[moisesdb]="moisesdb"
+DS_NAME[gtsinger]="GTSinger (48kHz vocals)"
+DS_URL[gtsinger]="hf:GTSinger/GTSinger"
+DS_SIZE[gtsinger]=30
+DS_FILE[gtsinger]="gtsinger"
+
+DS_NAME[maestro]="MAESTRO v3 (piano)"
+DS_URL[maestro]="https://storage.googleapis.com/magentadata/datasets/maestro/v3.0.0/maestro-v3.0.0.zip"
+DS_SIZE[maestro]=120
+DS_FILE[maestro]="maestro-v3.0.0.zip"
+
+DS_NAME[medleydb]="MedleyDB (pro recordings)"
+DS_URL[medleydb]="https://zenodo.org/records/1715175/files/MedleyDB-V2.zip?download=1"
+DS_SIZE[medleydb]=30
+DS_FILE[medleydb]="medleydb-v2.zip"
+
+DS_NAME[musicnet]="MusicNet (classical)"
+DS_URL[musicnet]="https://zenodo.org/records/5120004/files/musicnet.tar.gz?download=1"
+DS_SIZE[musicnet]=12
+DS_FILE[musicnet]="musicnet.tar.gz"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

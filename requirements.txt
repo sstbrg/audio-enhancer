@@ -12,6 +12,10 @@ tensorboard
 # Enhancement pipeline
 audiosr>=0.0.7
 
+# Mastering losses
+encodec                          # Meta: EnCodec embedding loss
+auraloss                         # Perceptual STFT (mel-scaled, A-weighted)
+
 # Metrics - no-reference
 audiobox-aesthetics          # Meta: Production Quality, Complexity, Enjoyment, Usefulness
 # PAM — clone https://github.com/soham97/PAM into third_party/PAM/
