@@ -11,7 +11,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.parametrizations import weight_norm
-from torch.nn.utils import remove_weight_norm
+from torch.nn.utils.parametrize import remove_parametrizations
+
+
+def remove_weight_norm(module):
+    """Remove weight norm compatible with both old and new PyTorch API."""
+    try:
+        remove_parametrizations(module, "weight")
+    except (ValueError, KeyError):
+        try:
+            torch.nn.utils.remove_weight_norm(module)
+        except Exception:
+            pass
 
 from .constants import (
     GENERATOR_CHANNELS,
