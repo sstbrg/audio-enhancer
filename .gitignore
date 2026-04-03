@@ -25,9 +25,10 @@ infra/*.tfstate.backup
 infra/.terraform.lock.hcl
 infra/terraform.tfvars
 
-# IDE
+# IDE / local tool config
 .vscode/
 .idea/
+.claude/
 
 # OS
 .DS_Store
