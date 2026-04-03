@@ -112,7 +112,12 @@ All strings from locale files, all styles in CSS. Supports wav/flac/mp3/ogg/webm
 ## Next steps
 
 1. Test AMP + torch.compile training (committed, not yet run)
-2. Evaluate epoch 0 checkpoint quality with analyzer
+2. Evaluate epoch 0 checkpoint quality with analyzer GUI
 3. Continue training (more epochs, possibly larger batch with AMP)
 4. Add 44.1kHz/16-bit input degradation to dataset (simulate CD quality input)
-5. Phase 1: degradation pipeline (codec artifacts, bad EQ, compression)
+5. Analyzer: add "upscale potential" assessment — detect sample rate ceiling, codec artifacts, bit depth headroom, spectral rolloff vs nyquist gap
+6. MAESTRO dataset: re-download on Vast.ai (101/120GB incomplete, auto-retry script in place)
+7. MoisesDB: user requested access at developer.moises.ai — download when link arrives
+8. MedleyDB: user requested access at medleydb.weebly.com — download when link arrives
+9. Phase 1: degradation pipeline (codec artifacts, bad EQ, compression, stereo damage)
+10. Vast.ai instance may still be running (auto-shutdown was disabled for MAESTRO download) — check and destroy if done
