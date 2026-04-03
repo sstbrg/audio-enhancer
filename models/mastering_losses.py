@@ -20,6 +20,8 @@ Based on research from:
 import math
 import warnings
 
+from .constants import OUTPUT_SAMPLE_RATE
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -36,7 +38,7 @@ class PerceptualSTFTLoss(nn.Module):
     on frequencies where human hearing is most sensitive (2-5 kHz).
     """
 
-    def __init__(self, sample_rate: int = 192000):
+    def __init__(self, sample_rate: int = OUTPUT_SAMPLE_RATE):
         super().__init__()
         self.sample_rate = sample_rate
         try:
@@ -86,7 +88,7 @@ class StereoImageLoss(nn.Module):
     Also includes a stereo width ratio penalty.
     """
 
-    def __init__(self, sample_rate: int = 192000):
+    def __init__(self, sample_rate: int = OUTPUT_SAMPLE_RATE):
         super().__init__()
         self.sample_rate = sample_rate
         try:
@@ -200,7 +202,7 @@ class DynamicRangeLoss(nn.Module):
     def _k_weight(x: torch.Tensor, AF) -> torch.Tensor:
         """Apply BS.1770 K-weighting using cascaded biquad filters."""
         # High-shelf: boost high frequencies ~+4dB (approx for 96kHz)
-        x = AF.highpass_biquad(x, sample_rate=96000, cutoff_freq=60.0)
+        x = AF.highpass_biquad(x, sample_rate=OUTPUT_SAMPLE_RATE, cutoff_freq=60.0)
         return x
 
 
@@ -238,7 +240,7 @@ class EncodecEmbeddingLoss(nn.Module):
             warnings.warn("EnCodec not installed. pip install encodec")
 
     def forward(self, y_hat: torch.Tensor, y: torch.Tensor,
-                input_sr: int = 192000) -> torch.Tensor:
+                input_sr: int = OUTPUT_SAMPLE_RATE) -> torch.Tensor:
         """Compute MSE between EnCodec embeddings.
 
         Args:
@@ -303,7 +305,7 @@ class AudioboxPQLoss(nn.Module):
             return False
 
     @torch.no_grad()
-    def forward(self, y_hat: torch.Tensor, sample_rate: int = 96000) -> torch.Tensor:
+    def forward(self, y_hat: torch.Tensor, sample_rate: int = OUTPUT_SAMPLE_RATE) -> torch.Tensor:
         """Negative PQ score. Validation only — no gradients."""
         if not self._load_predictor():
             return torch.tensor(0.0, device=y_hat.device)
@@ -357,7 +359,7 @@ class CLAPEmbeddingLoss(nn.Module):
 
     @torch.no_grad()
     def forward(self, y_hat: torch.Tensor, y: torch.Tensor,
-                input_sr: int = 96000) -> torch.Tensor:
+                input_sr: int = OUTPUT_SAMPLE_RATE) -> torch.Tensor:
         """MSE between CLAP audio embeddings. Validation only — no gradients."""
         if not self._load_model():
             return torch.tensor(0.0, device=y.device)
@@ -399,7 +401,7 @@ class MasteringLoss(nn.Module):
 
     def __init__(
         self,
-        sample_rate: int = 192000,
+        sample_rate: int = OUTPUT_SAMPLE_RATE,
         device: str = "cpu",
         lambda_perceptual_stft: float = 45.0,
         lambda_stereo: float = 10.0,

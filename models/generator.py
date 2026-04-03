@@ -1,10 +1,10 @@
-"""Generator for audio super-resolution (48kHz -> 192kHz).
+"""Generator for audio super-resolution (48kHz -> 96kHz).
 
 Architecture inspired by HiFi-GAN but adapted for bandwidth extension:
 - Takes 48kHz waveform input
-- Upsamples 4x via transposed convolutions (2x, 2x)
+- Upsamples 2x via transposed convolutions
 - Multi-receptive-field fusion blocks for quality
-- Outputs 192kHz waveform with generated high-frequency content
+- Outputs 96kHz waveform with generated high-frequency content
 """
 
 import torch
@@ -12,6 +12,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.parametrizations import weight_norm
 from torch.nn.utils import remove_weight_norm
+
+from .constants import (
+    GENERATOR_CHANNELS,
+    GENERATOR_UPSAMPLE_RATES,
+    GENERATOR_UPSAMPLE_KERNELS,
+    GENERATOR_RESBLOCK_KERNELS,
+    GENERATOR_RESBLOCK_DILATIONS,
+    LEAKY_RELU_SLOPE,
+)
 
 
 def init_weights(m, mean=0.0, std=0.01):
@@ -46,9 +55,9 @@ class ResBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for c1, c2 in zip(self.convs1, self.convs2):
-            xt = F.leaky_relu(x, 0.1)
+            xt = F.leaky_relu(x, LEAKY_RELU_SLOPE)
             xt = c1(xt)
-            xt = F.leaky_relu(xt, 0.1)
+            xt = F.leaky_relu(xt, LEAKY_RELU_SLOPE)
             xt = c2(xt)
             x = xt + x
         return x
@@ -71,10 +80,10 @@ class Generator(nn.Module):
         self,
         in_channels: int = 1,
         channels: int = 512,
-        upsample_rates: list[int] = [2, 2],
-        upsample_kernel_sizes: list[int] = [4, 4],
-        resblock_kernel_sizes: list[int] = [3, 7, 11],
-        resblock_dilation_sizes: list[list[int]] = [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+        upsample_rates: list[int] = GENERATOR_UPSAMPLE_RATES,
+        upsample_kernel_sizes: list[int] = GENERATOR_UPSAMPLE_KERNELS,
+        resblock_kernel_sizes: list[int] = GENERATOR_RESBLOCK_KERNELS,
+        resblock_dilation_sizes: list[list[int]] = GENERATOR_RESBLOCK_DILATIONS,
     ):
         super().__init__()
         self.num_upsamples = len(upsample_rates)
@@ -149,7 +158,7 @@ class Generator(nn.Module):
 
         # Upsample with residual blocks
         for i in range(self.num_upsamples):
-            x = F.leaky_relu(x, 0.1)
+            x = F.leaky_relu(x, LEAKY_RELU_SLOPE)
             x = self.ups[i](x)
 
             # Apply all resblocks for this upsample level and sum
@@ -164,7 +173,7 @@ class Generator(nn.Module):
         hf = self.hf_branch(x)
         x = x + hf
 
-        x = F.leaky_relu(x, 0.1)
+        x = F.leaky_relu(x, LEAKY_RELU_SLOPE)
         x = self.conv_post(x)
         x = torch.tanh(x)
 

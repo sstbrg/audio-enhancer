@@ -8,6 +8,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
 
+from .constants import OUTPUT_SAMPLE_RATE
+
 
 def generator_loss(disc_outputs: list[torch.Tensor]) -> torch.Tensor:
     """Least-squares generator adversarial loss."""
@@ -103,7 +105,7 @@ class MelSpectrogramLoss(nn.Module):
 
     def __init__(
         self,
-        sample_rate: int = 192000,
+        sample_rate: int = OUTPUT_SAMPLE_RATE,
         n_fft: int = 4096,
         hop_length: int = 480,
         n_mels: int = 128,
@@ -129,6 +131,6 @@ class MelSpectrogramLoss(nn.Module):
 
 
 # Backwards-compatible function wrapper (deprecated)
-def mel_spectrogram_loss(y_hat, y, sample_rate=192000):
+def mel_spectrogram_loss(y_hat, y, sample_rate=OUTPUT_SAMPLE_RATE):
     """Deprecated: use MelSpectrogramLoss module instead."""
     return MelSpectrogramLoss(sample_rate=sample_rate).to(y.device)(y_hat, y)

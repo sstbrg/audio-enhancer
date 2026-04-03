@@ -8,6 +8,8 @@ while the multi-scale discriminator handles different frequency bands.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from .constants import MPD_PERIODS, MSD_SCALES, LEAKY_RELU_SLOPE
 from torch.nn.utils.parametrizations import weight_norm, spectral_norm
 
 
@@ -54,7 +56,7 @@ class PeriodDiscriminator(nn.Module):
 class MultiPeriodDiscriminator(nn.Module):
     """Multiple period-based sub-discriminators."""
 
-    def __init__(self, periods: list[int] = [2, 3, 5, 7, 11]):
+    def __init__(self, periods: list[int] = MPD_PERIODS):
         super().__init__()
         self.discriminators = nn.ModuleList([
             PeriodDiscriminator(p) for p in periods
@@ -110,7 +112,7 @@ class ScaleDiscriminator(nn.Module):
 class MultiScaleDiscriminator(nn.Module):
     """Multiple scale-based sub-discriminators with progressive downsampling."""
 
-    def __init__(self, num_scales: int = 3):
+    def __init__(self, num_scales: int = MSD_SCALES):
         super().__init__()
         self.discriminators = nn.ModuleList([
             ScaleDiscriminator(use_spectral_norm=(i == 0))
