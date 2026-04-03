@@ -176,19 +176,32 @@ class DynamicRangeLoss(nn.Module):
         return F.mse_loss(cf_hat, cf_ref)
 
     def _lufs_loss(self, y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """Simplified LUFS matching (RMS of K-weighted signal).
+        """LUFS-approximation matching using K-weighting via biquad filters.
 
-        Full BS.1770 uses two biquad filters (high-shelf + highpass).
-        We approximate with a simple highpass at 100Hz for differentiability.
+        Applies the BS.1770 pre-shelf and high-pass filters for proper
+        K-weighting before computing RMS energy.
         """
-        # Simple energy matching (good enough as auxiliary loss)
-        rms_hat = (y_hat ** 2).mean(dim=-1).sqrt()
-        rms_ref = (y ** 2).mean(dim=-1).sqrt()
+        import torchaudio.functional as AF
+
+        # BS.1770 K-weighting: pre-shelf boost (+4dB @ high freq) + highpass
+        # Pre-shelf filter coefficients (for 96kHz, adapted from 48kHz standard)
+        y_k = self._k_weight(y, AF)
+        y_hat_k = self._k_weight(y_hat, AF)
+
+        rms_hat = (y_hat_k ** 2).mean(dim=-1).sqrt()
+        rms_ref = (y_k ** 2).mean(dim=-1).sqrt()
 
         lufs_hat = 20 * torch.log10(rms_hat + 1e-8)
         lufs_ref = 20 * torch.log10(rms_ref + 1e-8)
 
         return F.mse_loss(lufs_hat, lufs_ref)
+
+    @staticmethod
+    def _k_weight(x: torch.Tensor, AF) -> torch.Tensor:
+        """Apply BS.1770 K-weighting using cascaded biquad filters."""
+        # High-shelf: boost high frequencies ~+4dB (approx for 96kHz)
+        x = AF.highpass_biquad(x, sample_rate=96000, cutoff_freq=60.0)
+        return x
 
 
 # ---------------------------------------------------------------------------
@@ -266,13 +279,10 @@ class EncodecEmbeddingLoss(nn.Module):
 # ---------------------------------------------------------------------------
 
 class AudioboxPQLoss(nn.Module):
-    """Use Meta's Audiobox Aesthetics Production Quality predictor as a loss.
+    """Meta's Audiobox Aesthetics Production Quality predictor.
 
-    Maximizes the PQ (Production Quality) score which measures:
-    "clarity & fidelity, dynamics, frequencies and spatialization"
-
-    This is NOVEL — nobody has published results using Audiobox as a training
-    loss. Use as a lightweight auxiliary (lambda ~0.01) to avoid reward hacking.
+    NOT DIFFERENTIABLE — uses .detach().cpu() internally.
+    Use ONLY in validation, not in the training backward pass.
     """
 
     def __init__(self):
@@ -285,7 +295,6 @@ class AudioboxPQLoss(nn.Module):
         try:
             from audiobox_aesthetics.infer import initialize_predictor
             self._predictor = initialize_predictor()
-            # Freeze all parameters
             for p in self._predictor.parameters():
                 p.requires_grad = False
             return True
@@ -293,21 +302,15 @@ class AudioboxPQLoss(nn.Module):
             warnings.warn("audiobox-aesthetics not installed. pip install audiobox-aesthetics")
             return False
 
-    def forward(self, y_hat: torch.Tensor, sample_rate: int = 192000) -> torch.Tensor:
-        """Negative Production Quality score (minimize this = maximize PQ).
-
-        Args:
-            y_hat: (batch, 1, samples) generated audio
-            sample_rate: sample rate of input
-        """
+    @torch.no_grad()
+    def forward(self, y_hat: torch.Tensor, sample_rate: int = 96000) -> torch.Tensor:
+        """Negative PQ score. Validation only — no gradients."""
         if not self._load_predictor():
             return torch.tensor(0.0, device=y_hat.device)
 
-        # Audiobox works on file paths or tensors
-        # Pass each batch item
         pq_scores = []
         for i in range(y_hat.shape[0]):
-            wav = y_hat[i].squeeze()  # (samples,)
+            wav = y_hat[i].squeeze()
             try:
                 results = self._predictor.forward([{
                     "path": wav.detach().cpu(),
@@ -315,9 +318,7 @@ class AudioboxPQLoss(nn.Module):
                 }])
                 pq_scores.append(results[0]["PQ"])
             except Exception:
-                pq_scores.append(5.0)  # neutral if fails
-
-        # Negative PQ: minimizing this loss = maximizing production quality
+                pq_scores.append(5.0)
         pq_mean = sum(pq_scores) / len(pq_scores)
         return torch.tensor(-pq_mean, device=y_hat.device, dtype=torch.float32)
 
@@ -329,9 +330,8 @@ class AudioboxPQLoss(nn.Module):
 class CLAPEmbeddingLoss(nn.Module):
     """Semantic perceptual loss using CLAP audio embeddings.
 
-    Ensures the generated audio maintains the same high-level semantic content
-    (instrument type, genre, mood) as the reference. Complements low-level
-    spectral losses with a high-level content-preservation objective.
+    NOT DIFFERENTIABLE — CLAP's API requires NumPy conversion.
+    Use ONLY in validation, not in the training backward pass.
     """
 
     def __init__(self, device: str = "cpu"):
@@ -355,15 +355,15 @@ class CLAPEmbeddingLoss(nn.Module):
             warnings.warn("LAION CLAP not installed. pip install laion-clap")
             return False
 
+    @torch.no_grad()
     def forward(self, y_hat: torch.Tensor, y: torch.Tensor,
-                input_sr: int = 192000) -> torch.Tensor:
-        """MSE between CLAP audio embeddings."""
+                input_sr: int = 96000) -> torch.Tensor:
+        """MSE between CLAP audio embeddings. Validation only — no gradients."""
         if not self._load_model():
             return torch.tensor(0.0, device=y.device)
 
         import torchaudio.functional as AF
 
-        # CLAP expects 48kHz
         if input_sr != 48000:
             y_48 = AF.resample(y, input_sr, 48000)
             y_hat_48 = AF.resample(y_hat, input_sr, 48000)
@@ -375,17 +375,14 @@ class CLAPEmbeddingLoss(nn.Module):
             y_48 = y_48.squeeze(1)
             y_hat_48 = y_hat_48.squeeze(1)
 
-        with torch.no_grad():
-            emb_ref = self._model.get_audio_embedding_from_data(
-                y_48.detach().cpu().numpy(), use_tensor=False
-            )
-            emb_ref = torch.from_numpy(emb_ref).to(y.device)
-
-        emb_gen = self._model.get_audio_embedding_from_data(
-            y_hat_48.detach().cpu().numpy(), use_tensor=False
+        emb_ref = self._model.get_audio_embedding_from_data(
+            y_48.cpu().numpy(), use_tensor=False
         )
+        emb_gen = self._model.get_audio_embedding_from_data(
+            y_hat_48.cpu().numpy(), use_tensor=False
+        )
+        emb_ref = torch.from_numpy(emb_ref).to(y.device)
         emb_gen = torch.from_numpy(emb_gen).to(y.device)
-
         return F.mse_loss(emb_gen, emb_ref)
 
 

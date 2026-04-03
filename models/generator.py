@@ -164,7 +164,7 @@ class Generator(nn.Module):
         hf = self.hf_branch(x)
         x = x + hf
 
-        x = F.leaky_relu(x)
+        x = F.leaky_relu(x, 0.1)
         x = self.conv_post(x)
         x = torch.tanh(x)
 
