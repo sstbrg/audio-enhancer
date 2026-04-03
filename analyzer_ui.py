@@ -17,24 +17,55 @@ import soundfile as sf
 warnings.filterwarnings("ignore")
 
 
+def _load_audio(path: str) -> tuple[np.ndarray, int]:
+    """Load audio from any format (WAV, FLAC, MP3, AAC, OGG, etc.)."""
+    try:
+        data, sr = sf.read(path, dtype="float32", always_2d=True)
+    except Exception:
+        # Fallback for MP3/AAC/OGG via librosa
+        import librosa
+        mono, sr = librosa.load(path, sr=None, mono=False)
+        if mono.ndim == 1:
+            data = mono.reshape(-1, 1)
+        else:
+            data = mono.T  # (samples, channels)
+    return data, sr
+
+
 def analyze_file_info(path: str) -> dict:
-    info = sf.info(path)
-    bit_depth_map = {
-        "PCM_16": 16, "PCM_24": 24, "PCM_32": 32,
-        "FLOAT": 32, "DOUBLE": 64,
-    }
+    try:
+        info = sf.info(path)
+        fmt = f"{info.format} / {info.subtype}"
+        sr = info.samplerate
+        channels = info.channels
+        duration = info.duration
+        bit_depth_map = {
+            "PCM_16": 16, "PCM_24": 24, "PCM_32": 32,
+            "FLOAT": 32, "DOUBLE": 64,
+        }
+        bit_depth = bit_depth_map.get(info.subtype, "?")
+    except Exception:
+        # MP3/AAC fallback
+        import librosa
+        y, sr = librosa.load(path, sr=None, mono=False)
+        duration = librosa.get_duration(y=y, sr=sr)
+        channels = 1 if y.ndim == 1 else y.shape[0]
+        ext = Path(path).suffix.lower()
+        fmt = ext.replace(".", "").upper()
+        bit_depth = "lossy"
+
     return {
         "filename": Path(path).name,
-        "format": f"{info.format} / {info.subtype}",
-        "sample_rate": info.samplerate,
-        "bit_depth": bit_depth_map.get(info.subtype, "?"),
-        "channels": info.channels,
-        "duration_s": info.duration,
+        "format": fmt,
+        "sample_rate": sr,
+        "bit_depth": bit_depth,
+        "channels": channels,
+        "duration_s": duration,
     }
 
 
 def analyze_levels(path: str) -> dict:
-    data, sr = sf.read(path, dtype="float32", always_2d=True)
+    data, sr = _load_audio(path)
     mono = data.mean(axis=1) if data.shape[1] > 1 else data[:, 0]
 
     rms = np.sqrt(np.mean(mono ** 2))
@@ -93,7 +124,7 @@ def analyze_levels(path: str) -> dict:
 
 def analyze_spectrum(path: str) -> dict:
     import librosa
-    data, sr = sf.read(path, dtype="float32", always_2d=True)
+    data, sr = _load_audio(path)
     mono = data.mean(axis=1) if data.shape[1] > 1 else data[:, 0]
 
     centroid = librosa.feature.spectral_centroid(y=mono, sr=sr)[0]
@@ -114,7 +145,7 @@ def generate_waveform_plot(path: str):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    data, sr = sf.read(path, dtype="float32", always_2d=True)
+    data, sr = _load_audio(path)
     mono = data.mean(axis=1) if data.shape[1] > 1 else data[:, 0]
 
     # Limit to 30 seconds for display

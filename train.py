@@ -44,17 +44,21 @@ def load_config(path: str) -> dict:
 
 
 @torch.no_grad()
-def _run_validation(generator, loader, device, writer, epoch, global_step):
-    """Run SI-SNR and SDR on a few validation samples and log to tensorboard."""
-    from metrics.evaluate import AudioMetrics
-    import tempfile, soundfile as sf
+def _run_validation(generator, loader, device, writer, epoch, global_step, output_sr):
+    """Run full validation metrics and log to TensorBoard."""
+    import tempfile
+    import numpy as np
+    import soundfile as sf
 
     generator.eval()
-    metrics = AudioMetrics(device=str(device))
 
     si_snrs, sdrs = [], []
+    cdpam_scores, audiobox_pqs = [], []
+    chroma_sims, mfcc_sims = [], []
+    val_samples = 4
+
     for i, (lr_audio, hr_audio) in enumerate(loader):
-        if i >= 4:  # Evaluate on 4 batches
+        if i >= val_samples:
             break
         lr_audio = lr_audio.to(device)
         hr_audio = hr_audio.to(device)
@@ -64,10 +68,10 @@ def _run_validation(generator, loader, device, writer, epoch, global_step):
         hr_hat = hr_hat[..., :min_len]
         hr_audio = hr_audio[..., :min_len]
 
-        # Compute SI-SNR and SDR directly on tensors (first sample in batch)
         ref = hr_audio[0].squeeze().cpu()
         enh = hr_hat[0].squeeze().cpu()
 
+        # SI-SNR
         ref_z = ref - ref.mean()
         enh_z = enh - enh.mean()
         dot = torch.dot(enh_z, ref_z)
@@ -78,19 +82,79 @@ def _run_validation(generator, loader, device, writer, epoch, global_step):
         )
         si_snrs.append(si_snr_val.item())
 
+        # SDR
         noise = ref - enh
         sdr_val = 10 * torch.log10(
             torch.dot(ref, ref) / (torch.dot(noise, noise) + 1e-8) + 1e-8
         )
         sdrs.append(sdr_val.item())
 
+        # File-based metrics (save to temp files)
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f_ref, \
+                 tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f_enh:
+                sf.write(f_ref.name, ref.numpy(), output_sr)
+                sf.write(f_enh.name, enh.numpy(), output_sr)
+
+                from metrics.evaluate import AudioMetrics
+                metrics = AudioMetrics(device=str(device))
+
+                # CDPAM
+                try:
+                    cdpam = metrics.cdpam_score(f_ref.name, f_enh.name)
+                    if not np.isnan(cdpam.score):
+                        cdpam_scores.append(cdpam.score)
+                except Exception:
+                    pass
+
+                # Audiobox PQ (no-reference on enhanced)
+                try:
+                    ab = metrics.audiobox_aesthetics(f_enh.name)
+                    if isinstance(ab.score, dict) and "PQ" in ab.score:
+                        audiobox_pqs.append(ab.score["PQ"])
+                except Exception:
+                    pass
+
+                # Content preservation
+                try:
+                    chroma = metrics.chroma_similarity(f_ref.name, f_enh.name)
+                    mfcc = metrics.mfcc_similarity(f_ref.name, f_enh.name)
+                    chroma_sims.append(chroma.score)
+                    mfcc_sims.append(mfcc.score)
+                except Exception:
+                    pass
+
+                import os
+                os.unlink(f_ref.name)
+                os.unlink(f_enh.name)
+        except Exception:
+            pass
+
+    # Log all metrics
+    print(f"\n  Validation (epoch {epoch}):")
     if si_snrs:
-        import numpy as np
         avg_sisnr = np.mean(si_snrs)
-        avg_sdr = np.mean(sdrs)
         writer.add_scalar("val/si_snr", avg_sisnr, global_step)
+        print(f"    SI-SNR:  {avg_sisnr:.2f} dB")
+    if sdrs:
+        avg_sdr = np.mean(sdrs)
         writer.add_scalar("val/sdr", avg_sdr, global_step)
-        print(f"\n  Validation — SI-SNR: {avg_sisnr:.2f} dB, SDR: {avg_sdr:.2f} dB")
+        print(f"    SDR:     {avg_sdr:.2f} dB")
+    if cdpam_scores:
+        avg_cdpam = np.mean(cdpam_scores)
+        writer.add_scalar("val/cdpam", avg_cdpam, global_step)
+        print(f"    CDPAM:   {avg_cdpam:.4f} (lower=better)")
+    if audiobox_pqs:
+        avg_pq = np.mean(audiobox_pqs)
+        writer.add_scalar("val/audiobox_pq", avg_pq, global_step)
+        print(f"    Audiobox PQ: {avg_pq:.2f}/10")
+    if chroma_sims:
+        avg_chroma = np.mean(chroma_sims)
+        avg_mfcc = np.mean(mfcc_sims)
+        writer.add_scalar("val/chroma_similarity", avg_chroma, global_step)
+        writer.add_scalar("val/mfcc_similarity", avg_mfcc, global_step)
+        print(f"    Chroma:  {avg_chroma:.4f}")
+        print(f"    MFCC:    {avg_mfcc:.4f}")
 
     generator.train()
 
@@ -296,7 +360,7 @@ def train(args):
 
         # Periodic validation with quality metrics
         if (epoch + 1) % train_cfg["checkpoint_interval"] == 0:
-            _run_validation(generator, loader, device, writer, epoch, global_step)
+            _run_validation(generator, loader, device, writer, epoch, global_step, output_sr)
 
         # Save checkpoint
         if (epoch + 1) % train_cfg["checkpoint_interval"] == 0 or epoch == train_cfg["epochs"] - 1:
