@@ -99,13 +99,15 @@ def train(args):
     config = load_config(args.config)
     gan_cfg = config["gan"]
     train_cfg = gan_cfg["training"]
+    output_sr = config["output"]["sample_rate"]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    print(f"Target: 48kHz → {output_sr // 1000}kHz")
 
     # Dataset
     dataset = AudioSRDataset(
         root_dir=args.data_dir,
-        target_sr=192000,
+        target_sr=output_sr,
         input_sr=48000,
         segment_length=train_cfg["segment_length"],
     )
@@ -138,12 +140,12 @@ def train(args):
 
     # Losses
     stft_loss_fn = MultiResolutionSTFTLoss().to(device)
-    mel_loss_fn = MelSpectrogramLoss(sample_rate=192000).to(device)
+    mel_loss_fn = MelSpectrogramLoss(sample_rate=output_sr).to(device)
 
     # Mastering quality losses
     mastering_cfg = train_cfg.get("mastering", {})
     mastering_loss_fn = MasteringLoss(
-        sample_rate=192000,
+        sample_rate=output_sr,
         device=str(device),
         lambda_perceptual_stft=mastering_cfg.get("lambda_perceptual_stft", 45.0),
         lambda_stereo=mastering_cfg.get("lambda_stereo", 10.0),
