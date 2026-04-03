@@ -194,6 +194,83 @@ def analyze_spectrum(path: str) -> dict:
     }
 
 
+def analyze_upscale_potential(path: str) -> dict:
+    """Assess how much this file could benefit from enhancement."""
+    from models.constants import OUTPUT_SAMPLE_RATE
+
+    data, sr = _load_audio(path)
+    mono = data.mean(axis=1) if data.shape[1] > 1 else data[:, 0]
+    target_sr = OUTPUT_SAMPLE_RATE
+
+    result = {}
+
+    # Sample rate headroom
+    result["current_sr"] = sr
+    result["target_sr"] = target_sr
+    result["sr_headroom"] = max(0, target_sr - sr)
+
+    # Spectral ceiling: find where energy drops below noise floor
+    import librosa
+    S = np.abs(librosa.stft(mono, n_fft=4096))
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=4096)
+    mean_magnitude = S.mean(axis=1)
+
+    # Find the frequency where magnitude drops to 1% of max (effective bandwidth)
+    threshold = mean_magnitude.max() * 0.01
+    above = np.where(mean_magnitude > threshold)[0]
+    spectral_ceiling = freqs[above[-1]] if len(above) > 0 else 0
+    result["spectral_ceiling_hz"] = round(float(spectral_ceiling))
+    result["nyquist_hz"] = sr / 2
+
+    # Codec artifact detection: sharp spectral cutoff
+    # If spectral ceiling is well below Nyquist, likely lossy-encoded
+    nyquist_ratio = spectral_ceiling / (sr / 2) if sr > 0 else 0
+    result["nyquist_usage"] = round(float(nyquist_ratio), 3)
+
+    # Check for sharp cutoff (codec signature)
+    if len(above) > 10:
+        top_freqs = freqs[above[-10:]]
+        top_mags = mean_magnitude[above[-10:]]
+        # Sharp drop = codec (gradual drop = natural)
+        mag_gradient = np.diff(top_mags) / (np.diff(top_freqs) + 1e-8)
+        sharpness = float(np.abs(mag_gradient).mean())
+        result["cutoff_sharpness"] = round(sharpness, 6)
+    else:
+        result["cutoff_sharpness"] = 0.0
+
+    # Bit depth assessment
+    try:
+        import soundfile as sf
+        info = sf.info(path)
+        bit_map = {"PCM_16": 16, "PCM_24": 24, "PCM_32": 32, "FLOAT": 32}
+        result["bit_depth"] = bit_map.get(info.subtype, 16)
+    except Exception:
+        result["bit_depth"] = 16
+
+    # Enhancement verdict
+    score = 0
+    if sr < target_sr:
+        score += 3  # Can upsample
+    if nyquist_ratio < 0.85:
+        score += 2  # Spectral content well below Nyquist (lossy/downsampled)
+    if result["bit_depth"] < 24:
+        score += 1  # Can improve dynamic range
+    if sr <= 44100:
+        score += 1  # CD quality or below
+
+    if score >= 5:
+        result["verdict"] = "high"
+    elif score >= 3:
+        result["verdict"] = "medium"
+    elif score >= 1:
+        result["verdict"] = "low"
+    else:
+        result["verdict"] = "none"
+
+    result["score"] = score
+    return result
+
+
 def generate_waveform_plot(path: str):
     """Generate waveform + spectrogram matplotlib figure."""
     import matplotlib
@@ -322,6 +399,28 @@ def analyze(audio_file, ref_file, lang="English"):
     html += _row("metric_channels", str(info["channels"]))
     html += _row("metric_duration", f"{duration_m}:{duration_s:02d}")
     html += "</table>"
+
+    # Upscale potential
+    try:
+        up = analyze_upscale_potential(path)
+        verdict_colors = {"high": "badge-bad", "medium": "badge-ok", "low": "badge-good", "none": "badge-good"}
+        html += _section("section_upscale_potential")
+        html += _row("metric_sr_headroom",
+                      f"{up['current_sr']:,} Hz → {up['target_sr']:,} Hz (+{up['sr_headroom']:,} Hz)",
+                      "desc_sr_headroom")
+        html += _row("metric_spectral_ceiling",
+                      f"{up['spectral_ceiling_hz']:,} Hz / {up['nyquist_hz']:,.0f} Hz ({up['nyquist_usage']:.0%} used)",
+                      "desc_spectral_ceiling")
+        html += _row("metric_bit_depth_headroom",
+                      f"{up['bit_depth']}-bit → 24-bit",
+                      "desc_bit_depth_headroom")
+        verdict_class = verdict_colors.get(up["verdict"], "")
+        html += f'<tr><td class="label">{t("metric_enhancement_verdict")}</td>'
+        html += f'<td class="value"><span class="{verdict_class}">{t("verdict_" + up["verdict"])}</span></td></tr>'
+        html += f'<tr><td colspan="2" class="desc">{t("desc_enhancement_verdict")}</td></tr>'
+        html += "</table>"
+    except Exception as e:
+        html += f'<p class="muted">Upscale analysis: {e}</p>'
 
     # Levels & dynamics
     html += _section("section_levels")
