@@ -632,6 +632,11 @@ def enhance(audio_file, checkpoint_file, skip_apollo, skip_audiosr, lang="Englis
             use_gan=True,
         )
 
+        # Force cleanup of model to free GPU memory
+        del enhancer
+        import gc; gc.collect()
+        import torch; torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
         info_before = analyze_file_info(audio_file)
         info_after = analyze_file_info(out_path)
 
@@ -738,4 +743,5 @@ if __name__ == "__main__":
     parser.add_argument("--port", default=7860, type=int)
     args = parser.parse_args()
     _current_locale.update(load_locale(args.lang))
+    app.queue()
     app.launch(server_name="0.0.0.0", server_port=args.port)
