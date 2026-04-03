@@ -345,6 +345,62 @@ def analyze(audio_file, ref_file=None):
                 <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Are the beats and note attacks in the right place? Catches timing smear from processing.</td></tr>
             """
             html += "</table>"
+
+            # Training losses (same as train.py optimizer targets)
+            try:
+                import torch
+                from models.losses import MultiResolutionSTFTLoss, MelSpectrogramLoss
+                from models.mastering_losses import MasteringLoss
+                from models.constants import OUTPUT_SAMPLE_RATE
+
+                ref_audio, ref_sr = _load_audio(ref_file)
+                enh_audio, enh_sr = _load_audio(path)
+                ref_mono = ref_audio.mean(axis=1) if ref_audio.shape[1] > 1 else ref_audio[:, 0]
+                enh_mono = enh_audio.mean(axis=1) if enh_audio.shape[1] > 1 else enh_audio[:, 0]
+                min_len = min(len(ref_mono), len(enh_mono))
+                ref_t = torch.from_numpy(ref_mono[:min_len]).unsqueeze(0).unsqueeze(0)
+                enh_t = torch.from_numpy(enh_mono[:min_len]).unsqueeze(0).unsqueeze(0)
+
+                stft_loss_fn = MultiResolutionSTFTLoss()
+                mel_loss_fn = MelSpectrogramLoss(sample_rate=ref_sr)
+
+                with torch.no_grad():
+                    stft_val = stft_loss_fn(enh_t, ref_t).item()
+                    mel_val = mel_loss_fn(enh_t, ref_t).item()
+
+                mastering_fn = MasteringLoss(sample_rate=ref_sr, device="cpu")
+                with torch.no_grad():
+                    mastering_total, mastering_details = mastering_fn(enh_t, ref_t)
+
+                html += """<h3 style="color: #ff4488; margin-bottom: 5px;">🎛️ Training Losses (same as optimizer)</h3>
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">"""
+
+                html += f"""
+                    <tr><td style="color: #aaa; padding: 4px 8px;">Multi-Res STFT Loss</td>
+                        <td style="color: #fff; padding: 4px 8px;">{stft_val:.4f}</td></tr>
+                    <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Frequency-domain accuracy across multiple time-frequency resolutions. Lower = closer match.</td></tr>
+                    <tr><td style="color: #aaa; padding: 4px 8px;">Mel Spectrogram Loss</td>
+                        <td style="color: #fff; padding: 4px 8px;">{mel_val:.4f}</td></tr>
+                    <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Perceptually-weighted spectral difference using mel scale (mimics human hearing). Lower = better.</td></tr>
+                """
+
+                loss_descriptions = {
+                    "perceptual_stft": ("Perceptual STFT", "A-weighted, mel-scaled STFT. Penalizes artifacts in the 2-5kHz sensitivity range."),
+                    "stereo": ("Stereo Image", "Mid/side fidelity + stereo width preservation."),
+                    "dynamics": ("Dynamics", "Crest factor + loudness matching. Ensures punch and DR are preserved."),
+                    "encodec": ("EnCodec Embedding", "Neural perceptual distance in Meta's learned audio space. Captures timbre + texture."),
+                    "mastering_total": ("Mastering Total", "Combined mastering loss (all above weighted and summed)."),
+                }
+                for k, v in mastering_details.items():
+                    name, desc = loss_descriptions.get(k, (k, ""))
+                    html += f"""
+                        <tr><td style="color: #aaa; padding: 4px 8px;">{name}</td>
+                            <td style="color: #fff; padding: 4px 8px;">{v:.4f}</td></tr>
+                        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">{desc}</td></tr>
+                    """
+                html += "</table>"
+            except Exception as e:
+                html += f'<p style="color: #888;">Training losses not available: {e}</p>'
         except Exception as e:
             html += f'<p style="color: #ff4444;">Reference comparison error: {e}</p>'
 
