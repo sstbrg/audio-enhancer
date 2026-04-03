@@ -145,10 +145,11 @@ class DynamicRangeLoss(nn.Module):
     Prevents the GAN from compressing dynamics or altering loudness.
     """
 
-    def __init__(self, frame_size: int = 4096, hop_size: int = 2048):
+    def __init__(self, frame_size: int = 4096, hop_size: int = 2048, sample_rate: int = OUTPUT_SAMPLE_RATE):
         super().__init__()
         self.frame_size = frame_size
         self.hop_size = hop_size
+        self.sample_rate = sample_rate
 
     def forward(self, y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         if y.dim() == 3:
@@ -162,33 +163,35 @@ class DynamicRangeLoss(nn.Module):
 
     def _crest_factor_loss(self, y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """Per-frame crest factor (peak/RMS) matching."""
+        # Ensure enough samples for unfolding
+        if y.shape[-1] < self.frame_size:
+            return torch.tensor(0.0, device=y.device)
+
         y_hat_frames = y_hat.unfold(-1, self.frame_size, self.hop_size)
         y_frames = y.unfold(-1, self.frame_size, self.hop_size)
 
         # Use logsumexp as a smooth differentiable approximation to max
         temperature = 20.0
-        peak_hat = torch.logsumexp(temperature * y_hat_frames.abs(), dim=-1) / temperature
+        peak_hat = torch.logsumexp(temperature * y_hat_frames.abs().clamp(max=1.0), dim=-1) / temperature
         rms_hat = (y_hat_frames ** 2).mean(dim=-1).sqrt()
-        cf_hat = peak_hat / (rms_hat + 1e-8)
+        cf_hat = (peak_hat / (rms_hat + 1e-8)).clamp(max=100.0)
 
-        peak_ref = torch.logsumexp(temperature * y_frames.abs(), dim=-1) / temperature
+        peak_ref = torch.logsumexp(temperature * y_frames.abs().clamp(max=1.0), dim=-1) / temperature
         rms_ref = (y_frames ** 2).mean(dim=-1).sqrt()
-        cf_ref = peak_ref / (rms_ref + 1e-8)
+        cf_ref = (peak_ref / (rms_ref + 1e-8)).clamp(max=100.0)
 
         return F.mse_loss(cf_hat, cf_ref)
 
     def _lufs_loss(self, y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """LUFS-approximation matching using K-weighting via biquad filters.
-
-        Applies the BS.1770 pre-shelf and high-pass filters for proper
-        K-weighting before computing RMS energy.
-        """
+        """LUFS-approximation matching using K-weighting via biquad filters."""
         import torchaudio.functional as AF
 
-        # BS.1770 K-weighting: pre-shelf boost (+4dB @ high freq) + highpass
-        # Pre-shelf filter coefficients (for 96kHz, adapted from 48kHz standard)
-        y_k = self._k_weight(y, AF)
-        y_hat_k = self._k_weight(y_hat, AF)
+        try:
+            y_k = AF.highpass_biquad(y, sample_rate=self.sample_rate, cutoff_freq=60.0)
+            y_hat_k = AF.highpass_biquad(y_hat, sample_rate=self.sample_rate, cutoff_freq=60.0)
+        except Exception:
+            y_k = y
+            y_hat_k = y_hat
 
         rms_hat = (y_hat_k ** 2).mean(dim=-1).sqrt()
         rms_ref = (y_k ** 2).mean(dim=-1).sqrt()
@@ -198,12 +201,6 @@ class DynamicRangeLoss(nn.Module):
 
         return F.mse_loss(lufs_hat, lufs_ref)
 
-    @staticmethod
-    def _k_weight(x: torch.Tensor, AF) -> torch.Tensor:
-        """Apply BS.1770 K-weighting using cascaded biquad filters."""
-        # High-shelf: boost high frequencies ~+4dB (approx for 96kHz)
-        x = AF.highpass_biquad(x, sample_rate=OUTPUT_SAMPLE_RATE, cutoff_freq=60.0)
-        return x
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +420,7 @@ class MasteringLoss(nn.Module):
 
         self.perceptual_stft = PerceptualSTFTLoss(sample_rate)
         self.stereo_image = StereoImageLoss(sample_rate)
-        self.dynamics = DynamicRangeLoss()
+        self.dynamics = DynamicRangeLoss(sample_rate=sample_rate)
         self.encodec_emb = EncodecEmbeddingLoss(device)
 
         if lambda_audiobox_pq > 0:
