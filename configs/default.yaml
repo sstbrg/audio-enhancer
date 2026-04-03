@@ -1,0 +1,58 @@
+# Audio Enhancer Configuration
+# =============================
+
+# Pipeline stages (set false to skip)
+pipeline:
+  apollo: true          # Lossy artifact restoration
+  audiosr: true         # Neural SR to 48kHz
+  gan_upsample: true    # Custom GAN 48kHz -> 192kHz
+
+# Output settings
+output:
+  sample_rate: 192000
+  bit_depth: 32         # 32-bit float
+  format: wav           # wav, flac
+
+# AudioSR settings
+audiosr:
+  model_name: basic     # basic or speech
+  ddim_steps: 50        # Lower = faster, higher = better (default 200)
+  guidance_scale: 3.5
+
+# GAN Upsampler settings
+gan:
+  # Generator
+  generator:
+    channels: 512
+    upsample_rates: [2, 2]       # 4x total (48k -> 192k)
+    upsample_kernel_sizes: [4, 4]
+    resblock_kernel_sizes: [3, 7, 11]
+    resblock_dilation_sizes: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
+
+  # Discriminator
+  discriminator:
+    periods: [2, 3, 5, 7, 11]
+    scales: 3
+
+  # Training
+  training:
+    batch_size: 8
+    learning_rate_g: 0.0002
+    learning_rate_d: 0.0002
+    betas: [0.8, 0.99]
+    epochs: 500
+    segment_length: 32768       # ~0.68s at 48kHz
+    lambda_fm: 2.0              # Feature matching weight
+    lambda_mel: 45.0            # Mel spectrogram weight
+    lambda_stft: 45.0           # Multi-res STFT weight
+    checkpoint_interval: 10
+    log_interval: 100
+
+    # Mastering quality losses
+    mastering:
+      lambda_perceptual_stft: 45.0   # Mel-scaled, A-weighted STFT
+      lambda_stereo: 10.0            # Mid/side stereo image preservation
+      lambda_dynamics: 5.0           # Crest factor + LUFS matching
+      lambda_encodec: 10.0           # EnCodec embedding perceptual loss
+      lambda_audiobox_pq: 0.0        # Audiobox Production Quality (experimental, try 0.01)
+      lambda_clap: 0.0               # CLAP semantic embedding (requires laion-clap)

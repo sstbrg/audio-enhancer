@@ -1,0 +1,56 @@
+# Phase 0: Quick 5-hour validation run
+# =====================================
+# Goal: Verify training pipeline works end-to-end, losses converge,
+# and the model produces reasonable output. NOT final quality.
+
+# Pipeline stages
+pipeline:
+  apollo: true
+  audiosr: true
+  gan_upsample: true
+
+# Output settings
+output:
+  sample_rate: 192000
+  bit_depth: 32
+  format: wav
+
+# AudioSR settings
+audiosr:
+  model_name: basic
+  ddim_steps: 50
+  guidance_scale: 3.5
+
+# GAN Upsampler settings
+gan:
+  generator:
+    channels: 512
+    upsample_rates: [2, 2]
+    upsample_kernel_sizes: [4, 4]
+    resblock_kernel_sizes: [3, 7, 11]
+    resblock_dilation_sizes: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
+
+  discriminator:
+    periods: [2, 3, 5, 7, 11]
+    scales: 3
+
+  training:
+    batch_size: 4           # RTX 5090 24GB — 192kHz output is memory-hungry
+    learning_rate_g: 0.0002
+    learning_rate_d: 0.0002
+    betas: [0.8, 0.99]
+    epochs: 200
+    segment_length: 16384   # ~0.34s at 48kHz, ~1.36s at 192kHz output
+    lambda_fm: 2.0
+    lambda_mel: 45.0
+    lambda_stft: 45.0
+    checkpoint_interval: 10
+    log_interval: 50
+
+    mastering:
+      lambda_perceptual_stft: 45.0
+      lambda_stereo: 10.0
+      lambda_dynamics: 5.0
+      lambda_encodec: 10.0
+      lambda_audiobox_pq: 0.0
+      lambda_clap: 0.0

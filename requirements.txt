@@ -1,0 +1,23 @@
+# Core
+torch>=2.0
+torchaudio>=2.0
+soundfile>=0.12
+librosa>=0.10
+numpy>=1.24
+scipy>=1.10
+tqdm
+pyyaml
+tensorboard
+
+# Enhancement pipeline
+audiosr>=0.0.7
+
+# Metrics - no-reference
+audiobox-aesthetics          # Meta: Production Quality, Complexity, Enjoyment, Usefulness
+# PAM — clone https://github.com/soham97/PAM into third_party/PAM/
+# MuQ-Eval — clone https://github.com/dgtql/MuQ-Eval into third_party/MuQ-Eval/
+
+# Metrics - reference-based
+cdpam                        # Contrastive Deep Perceptual Audio Metric
+# ViSQOL — pip install git+https://github.com/diggerdu/visqol-py.git
+# SI-SNR and SDR are built-in (no dependencies)
