@@ -3,9 +3,11 @@
 
 Usage:
     python analyzer_ui.py
+    python analyzer_ui.py --lang ru
     # Opens http://localhost:7860 in your browser
 """
 
+import argparse
 import json
 import warnings
 from pathlib import Path
@@ -15,6 +17,29 @@ import numpy as np
 import soundfile as sf
 
 warnings.filterwarnings("ignore")
+
+
+# ── Localization ──────────────────────────────────────────────────────────────
+
+LOCALES_DIR = Path(__file__).parent / "locales"
+_current_locale = {}
+
+
+def load_locale(lang: str = "en") -> dict:
+    path = LOCALES_DIR / f"{lang}.json"
+    if not path.exists():
+        path = LOCALES_DIR / "en.json"
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def t(key: str) -> str:
+    """Translate a key using the current locale."""
+    return _current_locale.get(key, key)
+
+
+# Load default locale at import time (overridden by --lang at runtime)
+_current_locale.update(load_locale("en"))
 
 
 def _load_audio(path: str) -> tuple[np.ndarray, int]:
@@ -198,11 +223,11 @@ def quality_badge(value: float, thresholds: tuple) -> str:
     """Return colored HTML badge based on thresholds (bad, ok, good)."""
     bad, good = thresholds
     if value >= good:
-        return f'<span style="color: #00ff88; font-weight: bold;">{value:.2f} ✓</span>'
+        return f'<span class="badge-good">{value:.2f} ✓</span>'
     elif value >= bad:
-        return f'<span style="color: #ffaa00; font-weight: bold;">{value:.2f} ~</span>'
+        return f'<span class="badge-ok">{value:.2f} ~</span>'
     else:
-        return f'<span style="color: #ff4444; font-weight: bold;">{value:.2f} ✗</span>'
+        return f'<span class="badge-bad">{value:.2f} ✗</span>'
 
 
 def _convert_if_needed(path: str) -> str:
@@ -225,128 +250,122 @@ def _convert_if_needed(path: str) -> str:
     return tmp.name
 
 
+def _row(label_key: str, value: str, desc_key: str = "") -> str:
+    """Generate a table row with optional description, using locale keys."""
+    html = f'<tr><td class="label">{t(label_key)}</td><td class="value">{value}</td></tr>'
+    if desc_key:
+        html += f'<tr><td colspan="2" class="desc">{t(desc_key)}</td></tr>'
+    return html
+
+
+def _row_badge(label_key: str, value: float, thresholds: tuple, unit: str = "", desc_key: str = "") -> str:
+    """Generate a table row with quality badge + description."""
+    html = f'<tr><td class="label">{t(label_key)}</td><td class="value">{quality_badge(value, thresholds)} {unit}</td></tr>'
+    if desc_key:
+        html += f'<tr><td colspan="2" class="desc">{t(desc_key)}</td></tr>'
+    return html
+
+
+def _section(title_key: str) -> str:
+    return f'<h3 class="section">{t(title_key)}</h3><table>'
+
+
+def _section_ref(title_key: str) -> str:
+    return f'<h3 class="ref">{t(title_key)}</h3><table>'
+
+
+def _section_loss(title_key: str) -> str:
+    return f'<h3 class="loss">{t(title_key)}</h3><table>'
+
+
 def analyze(audio_file, ref_file=None):
     """Main analysis function called by Gradio."""
     if audio_file is None:
-        return "Upload an audio file to analyze.", None
+        return t("analyze_upload"), None
 
-    path = audio_file
-    path = _convert_if_needed(path)
+    path = _convert_if_needed(audio_file)
 
-    # File info
     info = analyze_file_info(path)
     duration_m = int(info["duration_s"]) // 60
     duration_s = int(info["duration_s"]) % 60
-
-    # Levels
     levels = analyze_levels(path)
 
-    # Spectrum
     try:
         spec = analyze_spectrum(path)
     except Exception:
         spec = {}
 
     # Build HTML report
-    html = f"""
-    <div style="font-family: 'Segoe UI', sans-serif; padding: 10px;">
+    html = '<div class="report">'
 
-    <h3 style="color: #00d4ff; margin-bottom: 5px;">📄 File Info</h3>
-    <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">
-        <tr><td style="color: #aaa; padding: 4px 8px;">File</td>
-            <td style="color: #fff; padding: 4px 8px;"><b>{info['filename']}</b></td></tr>
-        <tr><td style="color: #aaa; padding: 4px 8px;">Format</td>
-            <td style="color: #fff; padding: 4px 8px;">{info['format']}</td></tr>
-        <tr><td style="color: #aaa; padding: 4px 8px;">Sample Rate</td>
-            <td style="color: #fff; padding: 4px 8px;">{info['sample_rate']:,} Hz</td></tr>
-        <tr><td style="color: #aaa; padding: 4px 8px;">Bit Depth</td>
-            <td style="color: #fff; padding: 4px 8px;">{info['bit_depth']}-bit</td></tr>
-        <tr><td style="color: #aaa; padding: 4px 8px;">Channels</td>
-            <td style="color: #fff; padding: 4px 8px;">{info['channels']}</td></tr>
-        <tr><td style="color: #aaa; padding: 4px 8px;">Duration</td>
-            <td style="color: #fff; padding: 4px 8px;">{duration_m}:{duration_s:02d}</td></tr>
-    </table>
+    # File info
+    html += _section("section_file_info")
+    html += _row("metric_format", f"<b>{info['filename']}</b> &mdash; {info['format']}")
+    html += _row("metric_sample_rate", f"{info['sample_rate']:,} Hz")
+    html += _row("metric_bit_depth", f"{info['bit_depth']}-bit")
+    html += _row("metric_channels", str(info["channels"]))
+    html += _row("metric_duration", f"{duration_m}:{duration_s:02d}")
+    html += "</table>"
 
-    <h3 style="color: #00d4ff; margin-bottom: 5px;">📊 Levels &amp; Dynamics</h3>
-    <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">
-        <tr><td style="color: #aaa; padding: 4px 8px;">Peak Level</td>
-            <td style="color: #fff; padding: 4px 8px;">{levels['peak_db']:.1f} dBFS</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Loudest moment in the track. 0 dBFS = digital maximum. Typical: -1 to -0.1 dBFS for mastered music.</td></tr>
-        <tr><td style="color: #aaa; padding: 4px 8px;">RMS Level</td>
-            <td style="color: #fff; padding: 4px 8px;">{levels['rms_db']:.1f} dBFS</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Average perceived loudness. Streaming targets: -14 LUFS (Spotify), -16 LUFS (Apple). Loudness war: above -8.</td></tr>
-        <tr><td style="color: #aaa; padding: 4px 8px;">Crest Factor</td>
-            <td style="padding: 4px 8px;">{quality_badge(levels['crest_factor_db'], (6, 10))} dB</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Peak-to-RMS ratio. Higher = more transient punch. Typical: 10-18 dB (well mastered), 4-6 dB (crushed/loudness war).</td></tr>
-        <tr><td style="color: #aaa; padding: 4px 8px;">Dynamic Range</td>
-            <td style="padding: 4px 8px;">{quality_badge(levels['dynamic_range_db'], (6, 10))} dB</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Difference between loud and quiet sections. Typical: 12+ dB (classical/jazz), 8-12 dB (rock/pop), &lt;6 dB (EDM/compressed).</td></tr>
-        <tr><td style="color: #aaa; padding: 4px 8px;">Clipping</td>
-            <td style="padding: 4px 8px;">{"<span style='color: #00ff88; font-weight: bold;'>0% clean</span>" if levels['clip_pct'] == 0 else "<span style='color: #ffaa00; font-weight: bold;'>" + f"{levels['clip_pct']:.3f}% mild</span>" if levels['clip_pct'] < 0.1 else "<span style='color: #ff8800; font-weight: bold;'>" + f"{levels['clip_pct']:.3f}% clipped</span>" if levels['clip_pct'] < 0.5 else "<span style='color: #ff4444; font-weight: bold;'>" + f"{levels['clip_pct']:.3f}% heavy</span>"} ({levels['clipped_samples']:,} samples)</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Samples at digital maximum. 0% = clean headroom, 0.01-0.1% = brief peaks (often acceptable), 0.1-0.5% = mildly clipped, &gt;0.5% = significant clipping.</td></tr>
-        <tr><td style="color: #aaa; padding: 4px 8px;">Max Consecutive Clips</td>
-            <td style="padding: 4px 8px;">{"<span style='color: #00ff88;'>0</span>" if levels['max_consecutive_clips'] == 0 else f"<span style='color: #ff4444;'>{levels['max_consecutive_clips']}</span>"}</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Consecutive clipped samples indicate hard limiting/brick-wall clipping. 0 = clean, 1-3 = intersample peaks, 4+ = audible distortion.</td></tr>
-    """
+    # Levels & dynamics
+    html += _section("section_levels")
+    html += _row("metric_peak_level", f"{levels['peak_db']:.1f} dBFS", "desc_peak_level")
+    html += _row("metric_rms_level", f"{levels['rms_db']:.1f} dBFS", "desc_rms_level")
+    html += _row_badge("metric_crest_factor", levels["crest_factor_db"], (6, 10), "dB", "desc_crest_factor")
+    html += _row_badge("metric_dynamic_range", levels["dynamic_range_db"], (6, 10), "dB", "desc_dynamic_range")
+
+    # Clipping
+    clip = levels["clip_pct"]
+    if clip == 0:
+        clip_badge = f'<span class="badge-good">0% {t("clip_clean")}</span>'
+    elif clip < 0.1:
+        clip_badge = f'<span class="badge-ok">{clip:.3f}% {t("clip_mild")}</span>'
+    elif clip < 0.5:
+        clip_badge = f'<span class="badge-ok">{clip:.3f}% {t("clip_clipped")}</span>'
+    else:
+        clip_badge = f'<span class="badge-bad">{clip:.3f}% {t("clip_heavy")}</span>'
+    html += f'<tr><td class="label">{t("metric_clipping")}</td><td class="value">{clip_badge} ({levels["clipped_samples"]:,} samples)</td></tr>'
+    html += f'<tr><td colspan="2" class="desc">{t("desc_clipping")}</td></tr>'
+
+    mcc = levels["max_consecutive_clips"]
+    mcc_badge = '<span class="badge-good">0</span>' if mcc == 0 else f'<span class="badge-bad">{mcc}</span>'
+    html += f'<tr><td class="label">{t("metric_max_consecutive_clips")}</td><td class="value">{mcc_badge}</td></tr>'
+    html += f'<tr><td colspan="2" class="desc">{t("desc_max_consecutive_clips")}</td></tr>'
 
     if "stereo_width" in levels:
-        html += f"""
-        <tr><td style="color: #aaa; padding: 4px 8px;">Stereo Width</td>
-            <td style="color: #fff; padding: 4px 8px;">{levels['stereo_width']:.4f}</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Side-to-mid energy ratio. 0 = mono, 0.1-0.3 = typical mix, &gt;0.5 = very wide/spatial.</td></tr>
-        <tr><td style="color: #aaa; padding: 4px 8px;">L/R Correlation</td>
-            <td style="padding: 4px 8px;">{quality_badge(levels['lr_correlation'], (0.3, 0.5))}</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">How similar L and R channels are. Typical: 0.5-0.9. Near 1.0 = mono. Below 0.3 = possible phase issues.</td></tr>
-        """
+        html += _row("metric_stereo_width", f"{levels['stereo_width']:.4f}", "desc_stereo_width")
+        html += _row_badge("metric_lr_correlation", levels["lr_correlation"], (0.3, 0.5), "", "desc_lr_correlation")
 
     html += "</table>"
 
+    # Spectrum
     if spec:
-        html += f"""
-        <h3 style="color: #00d4ff; margin-bottom: 5px;">🎵 Spectrum</h3>
-        <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">
-            <tr><td style="color: #aaa; padding: 4px 8px;">Spectral Centroid</td>
-                <td style="color: #fff; padding: 4px 8px;">{spec['spectral_centroid_hz']:,.0f} Hz</td></tr>
-            <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">"Center of gravity" of the frequency spectrum. Typical: 1000-3000 Hz (pop/rock), 500-1500 Hz (bass-heavy), 3000+ Hz (bright/electronic).</td></tr>
-            <tr><td style="color: #aaa; padding: 4px 8px;">Spectral Bandwidth</td>
-                <td style="color: #fff; padding: 4px 8px;">{spec['spectral_bandwidth_hz']:,.0f} Hz</td></tr>
-            <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Spread of frequencies present. Typical: 2000-4000 Hz. Higher = richer harmonics and more complex arrangement.</td></tr>
-            <tr><td style="color: #aaa; padding: 4px 8px;">Rolloff (95%)</td>
-                <td style="color: #fff; padding: 4px 8px;">{spec['spectral_rolloff_95_hz']:,.0f} Hz</td></tr>
-            <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Frequency below which 95% of energy sits. Typical: 8-15 kHz (MP3/compressed), 16-20 kHz (CD), 20+ kHz (hi-res).</td></tr>
-            <tr><td style="color: #aaa; padding: 4px 8px;">Nyquist</td>
-                <td style="color: #fff; padding: 4px 8px;">{spec['nyquist_hz']:,.0f} Hz</td></tr>
-            <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Maximum representable frequency at this sample rate (sample_rate / 2).</td></tr>
-        </table>
-        """
+        html += _section("section_spectrum")
+        html += _row("metric_spectral_centroid", f"{spec['spectral_centroid_hz']:,.0f} Hz", "desc_spectral_centroid")
+        html += _row("metric_spectral_bandwidth", f"{spec['spectral_bandwidth_hz']:,.0f} Hz", "desc_spectral_bandwidth")
+        html += _row("metric_spectral_rolloff", f"{spec['spectral_rolloff_95_hz']:,.0f} Hz", "desc_spectral_rolloff")
+        html += _row("metric_nyquist", f"{spec['nyquist_hz']:,.0f} Hz", "desc_nyquist")
+        html += "</table>"
 
     # Perceptual metrics (Audiobox)
     try:
         from metrics.evaluate import AudioMetrics
         m = AudioMetrics()
-        # Audiobox needs a wav file (torchcodec can't handle webm/mp3 on some systems)
         wav_path = _convert_if_needed(path)
         ab = m.audiobox_aesthetics(wav_path)
         if isinstance(ab.score, dict):
-            descriptions = {
-                "PQ": "Clarity, fidelity, frequency balance, and spatial imaging. Typical: 4-6 (amateur), 6-8 (professional), 8+ (studio master).",
-                "CE": "How pleasant and engaging the music feels. Typical: 3-5 (background), 5-7 (good), 7+ (highly engaging).",
-                "PC": "Arrangement complexity: layers, instruments, rhythmic variation. Typical: 2-4 (simple), 5-7 (full band), 7+ (orchestral/dense).",
-                "CU": "How well-suited for professional use (sync, broadcast). Typical: 3-5 (lo-fi/demo), 6-8 (broadcast ready), 8+ (premium).",
-            }
-            html += """<h3 style="color: #00d4ff; margin-bottom: 5px;">🎧 Perceptual Quality (Audiobox)</h3>
-            <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">"""
-            labels = {"PQ": "Production Quality", "CE": "Enjoyment",
-                      "PC": "Complexity", "CU": "Usefulness"}
+            html += _section("section_perceptual")
+            ab_keys = {"PQ": "metric_production_quality", "CE": "metric_enjoyment",
+                        "PC": "metric_complexity", "CU": "metric_usefulness"}
+            ab_descs = {"PQ": "desc_production_quality", "CE": "desc_enjoyment",
+                        "PC": "desc_complexity", "CU": "desc_usefulness"}
             for k, v in ab.score.items():
-                badge = quality_badge(v, (4, 6)) if k == "PQ" else f'<span style="color: #fff;">{v:.2f}</span>'
-                desc = descriptions.get(k, "")
-                html += f"""<tr><td style="color: #aaa; padding: 4px 8px;">{labels.get(k, k)}</td>
-                    <td style="padding: 4px 8px;">{badge} / 10</td></tr>
-                    <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">{desc}</td></tr>"""
+                badge = quality_badge(v, (4, 6)) if k == "PQ" else f'<span class="value">{v:.2f}</span>'
+                html += f'<tr><td class="label">{t(ab_keys.get(k, k))}</td><td class="value">{badge} / 10</td></tr>'
+                html += f'<tr><td colspan="2" class="desc">{t(ab_descs.get(k, ""))}</td></tr>'
             html += "</table>"
     except Exception as e:
-        html += f'<p style="color: #888;">Audiobox not available: {e}</p>'
+        html += f'<p style="color: #888;">{t("audiobox_not_available")}: {e}</p>'
 
     # Reference comparison
     if ref_file is not None:
@@ -355,42 +374,25 @@ def analyze(audio_file, ref_file=None):
             from metrics.evaluate import AudioMetrics
             m = AudioMetrics()
 
-            html += """<h3 style="color: #ff8800; margin-bottom: 5px;">🔀 Reference Comparison</h3>
-            <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">"""
-
+            html += _section_ref("section_reference")
             sisnr = m.si_snr(ref_file, path)
             sdr = m.sdr(ref_file, path)
-            html += f"""
-                <tr><td style="color: #aaa; padding: 4px 8px;">SI-SNR</td>
-                    <td style="padding: 4px 8px;">{quality_badge(sisnr.score, (10, 20))} dB</td></tr>
-                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">How closely the signal matches the reference, ignoring volume. Typical: 15-25 dB (good), 25+ dB (transparent), &lt;10 dB (significant artifacts).</td></tr>
-                <tr><td style="color: #aaa; padding: 4px 8px;">SDR</td>
-                    <td style="padding: 4px 8px;">{quality_badge(sdr.score, (10, 20))} dB</td></tr>
-                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Overall signal quality vs distortion. Typical: 15-25 dB (good enhancement), 25+ dB (near-transparent), &lt;10 dB (heavy processing).</td></tr>
-            """
+            html += _row_badge("metric_si_snr", sisnr.score, (10, 20), "dB", "desc_si_snr")
+            html += _row_badge("metric_sdr", sdr.score, (10, 20), "dB", "desc_sdr")
 
             chroma = m.chroma_similarity(ref_file, path)
             mfcc = m.mfcc_similarity(ref_file, path)
             onset = m.onset_f1(ref_file, path)
-            html += f"""
-                <tr><td style="color: #aaa; padding: 4px 8px;">Chroma (melody)</td>
-                    <td style="padding: 4px 8px;">{quality_badge(chroma.score, (0.9, 0.95))}</td></tr>
-                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Are the notes and harmonies preserved? Typical: &gt;0.98 (transparent), 0.90-0.98 (minor coloring), &lt;0.90 (pitch/harmony damage).</td></tr>
-                <tr><td style="color: #aaa; padding: 4px 8px;">MFCC (timbre)</td>
-                    <td style="padding: 4px 8px;">{quality_badge(mfcc.score, (0.85, 0.9))}</td></tr>
-                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Does the "character" of instruments sound the same? Typical: &gt;0.95 (transparent), 0.85-0.95 (subtle EQ), &lt;0.85 (tonal shift).</td></tr>
-                <tr><td style="color: #aaa; padding: 4px 8px;">Onset F1 (rhythm)</td>
-                    <td style="padding: 4px 8px;">{quality_badge(onset.score, (0.8, 0.9))}</td></tr>
-                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Are the beats and note attacks in the right place? Typical: &gt;0.95 (transparent), 0.85-0.95 (slight smear), &lt;0.85 (timing damage).</td></tr>
-            """
+            html += _row_badge("metric_chroma", chroma.score, (0.9, 0.95), "", "desc_chroma")
+            html += _row_badge("metric_mfcc", mfcc.score, (0.85, 0.9), "", "desc_mfcc")
+            html += _row_badge("metric_onset_f1", onset.score, (0.8, 0.9), "", "desc_onset_f1")
             html += "</table>"
 
-            # Training losses (same as train.py optimizer targets)
+            # Training losses
             try:
                 import torch
                 from models.losses import MultiResolutionSTFTLoss, MelSpectrogramLoss
                 from models.mastering_losses import MasteringLoss
-                from models.constants import OUTPUT_SAMPLE_RATE
 
                 ref_audio, ref_sr = _load_audio(ref_file)
                 enh_audio, enh_sr = _load_audio(path)
@@ -400,52 +402,39 @@ def analyze(audio_file, ref_file=None):
                 ref_t = torch.from_numpy(ref_mono[:min_len]).unsqueeze(0).unsqueeze(0)
                 enh_t = torch.from_numpy(enh_mono[:min_len]).unsqueeze(0).unsqueeze(0)
 
-                stft_loss_fn = MultiResolutionSTFTLoss()
-                mel_loss_fn = MelSpectrogramLoss(sample_rate=ref_sr)
-
                 with torch.no_grad():
-                    stft_val = stft_loss_fn(enh_t, ref_t).item()
-                    mel_val = mel_loss_fn(enh_t, ref_t).item()
+                    stft_val = MultiResolutionSTFTLoss()(enh_t, ref_t).item()
+                    mel_val = MelSpectrogramLoss(sample_rate=ref_sr)(enh_t, ref_t).item()
+                    _, mastering_details = MasteringLoss(sample_rate=ref_sr, device="cpu")(enh_t, ref_t)
 
-                mastering_fn = MasteringLoss(sample_rate=ref_sr, device="cpu")
-                with torch.no_grad():
-                    mastering_total, mastering_details = mastering_fn(enh_t, ref_t)
+                html += _section_loss("section_training_losses")
+                html += _row("metric_stft_loss", f"{stft_val:.4f}", "desc_stft_loss")
+                html += _row("metric_mel_loss", f"{mel_val:.4f}", "desc_mel_loss")
 
-                html += """<h3 style="color: #ff4488; margin-bottom: 5px;">🎛️ Training Losses (same as optimizer)</h3>
-                <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">"""
-
-                html += f"""
-                    <tr><td style="color: #aaa; padding: 4px 8px;">Multi-Res STFT Loss</td>
-                        <td style="color: #fff; padding: 4px 8px;">{stft_val:.4f}</td></tr>
-                    <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Frequency-domain accuracy across multiple time-frequency resolutions. Lower = closer match.</td></tr>
-                    <tr><td style="color: #aaa; padding: 4px 8px;">Mel Spectrogram Loss</td>
-                        <td style="color: #fff; padding: 4px 8px;">{mel_val:.4f}</td></tr>
-                    <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Perceptually-weighted spectral difference using mel scale (mimics human hearing). Lower = better.</td></tr>
-                """
-
-                loss_descriptions = {
-                    "perceptual_stft": ("Perceptual STFT", "A-weighted, mel-scaled STFT. Penalizes artifacts in the 2-5kHz sensitivity range."),
-                    "stereo": ("Stereo Image", "Mid/side fidelity + stereo width preservation."),
-                    "dynamics": ("Dynamics", "Crest factor + loudness matching. Ensures punch and DR are preserved."),
-                    "encodec": ("EnCodec Embedding", "Neural perceptual distance in Meta's learned audio space. Captures timbre + texture."),
-                    "mastering_total": ("Mastering Total", "Combined mastering loss (all above weighted and summed)."),
+                mastering_key_map = {
+                    "perceptual_stft": "metric_perceptual_stft",
+                    "stereo": "metric_stereo_image",
+                    "dynamics": "metric_dynamics_loss",
+                    "encodec": "metric_encodec",
+                    "mastering_total": "metric_mastering_total",
+                }
+                mastering_desc_map = {
+                    "perceptual_stft": "desc_perceptual_stft",
+                    "stereo": "desc_stereo_image",
+                    "dynamics": "desc_dynamics_loss",
+                    "encodec": "desc_encodec",
+                    "mastering_total": "desc_mastering_total",
                 }
                 for k, v in mastering_details.items():
-                    name, desc = loss_descriptions.get(k, (k, ""))
-                    html += f"""
-                        <tr><td style="color: #aaa; padding: 4px 8px;">{name}</td>
-                            <td style="color: #fff; padding: 4px 8px;">{v:.4f}</td></tr>
-                        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">{desc}</td></tr>
-                    """
+                    html += _row(mastering_key_map.get(k, k), f"{v:.4f}", mastering_desc_map.get(k, ""))
                 html += "</table>"
             except Exception as e:
-                html += f'<p style="color: #888;">Training losses not available: {e}</p>'
+                html += f'<p style="color: #888;">{e}</p>'
         except Exception as e:
-            html += f'<p style="color: #ff4444;">Reference comparison error: {e}</p>'
+            html += f'<p style="color: #ff4444;">{e}</p>'
 
     html += "</div>"
 
-    # Generate plots
     try:
         fig = generate_waveform_plot(path)
     except Exception:
@@ -460,12 +449,12 @@ AUDIO_FILE_TYPES = [".wav", ".flac", ".mp3", ".ogg", ".aac", ".aiff", ".m4a", ".
 def enhance(audio_file, checkpoint_file, skip_apollo, skip_audiosr):
     """Enhance audio using the trained model."""
     if audio_file is None:
-        return "Upload an audio file to enhance.", None
+        return t("enhance_upload_audio"), None
 
     path = _convert_if_needed(audio_file)
 
     if checkpoint_file is None:
-        return "Upload a model checkpoint (.pt file) to enhance audio.", None
+        return t("enhance_upload_checkpoint"), None
 
     try:
         from enhance import AudioEnhancer
@@ -490,29 +479,29 @@ def enhance(audio_file, checkpoint_file, skip_apollo, skip_audiosr):
         info_after = analyze_file_info(out_path)
 
         html = f"""
-        <div style="font-family: 'Segoe UI', sans-serif; padding: 10px;">
-        <h3 style="color: #00ff88;">Enhancement Complete</h3>
-        <table style="width: 100%; border-collapse: collapse;">
-            <tr><td style="color: #aaa; padding: 4px 8px;"></td>
-                <td style="color: #ff8800; padding: 4px 8px; font-weight: bold;">Before</td>
-                <td style="color: #00ff88; padding: 4px 8px; font-weight: bold;">After</td></tr>
-            <tr><td style="color: #aaa; padding: 4px 8px;">Sample Rate</td>
-                <td style="color: #fff; padding: 4px 8px;">{info_before['sample_rate']:,} Hz</td>
-                <td style="color: #00ff88; padding: 4px 8px;">{info_after['sample_rate']:,} Hz</td></tr>
-            <tr><td style="color: #aaa; padding: 4px 8px;">Bit Depth</td>
-                <td style="color: #fff; padding: 4px 8px;">{info_before['bit_depth']}</td>
-                <td style="color: #00ff88; padding: 4px 8px;">{info_after['bit_depth']}</td></tr>
-            <tr><td style="color: #aaa; padding: 4px 8px;">Format</td>
-                <td style="color: #fff; padding: 4px 8px;">{info_before['format']}</td>
-                <td style="color: #00ff88; padding: 4px 8px;">{info_after['format']}</td></tr>
+        <div class="report">
+        <h3 class="done">{t("enhance_complete")}</h3>
+        <table>
+            <tr><td class="label"></td>
+                <td class="ref" style="font-weight: bold;">{t("enhance_before")}</td>
+                <td class="badge-good" style="font-weight: bold;">{t("enhance_after")}</td></tr>
+            <tr><td class="label">{t("metric_sample_rate")}</td>
+                <td class="value">{info_before['sample_rate']:,} Hz</td>
+                <td class="badge-good">{info_after['sample_rate']:,} Hz</td></tr>
+            <tr><td class="label">{t("metric_bit_depth")}</td>
+                <td class="value">{info_before['bit_depth']}</td>
+                <td class="badge-good">{info_after['bit_depth']}</td></tr>
+            <tr><td class="label">{t("metric_format")}</td>
+                <td class="value">{info_before['format']}</td>
+                <td class="badge-good">{info_after['format']}</td></tr>
         </table>
-        <p style="color: #888; margin-top: 10px;">Tip: Use the Analyze tab to compare before/after quality metrics.</p>
+        <p class="tip">{t("enhance_tip")}</p>
         </div>
         """
         return html, out_path
 
     except Exception as e:
-        return f'<p style="color: #ff4444;">Enhancement error: {e}</p>', None
+        return f'<p class="error">{t("enhance_error")}: {e}</p>', None
 
 
 # ── Gradio UI ─────────────────────────────────────────────────────────────────
@@ -526,24 +515,40 @@ with gr.Blocks(
     css="""
     .gradio-container { background: #1a1a2e !important; }
     .gr-button-primary { background: #00d4ff !important; }
+    .report { font-family: 'Segoe UI', sans-serif; padding: 10px; }
+    .report h3 { margin-bottom: 5px; }
+    .report h3.section { color: #00d4ff; }
+    .report h3.ref { color: #ff8800; }
+    .report h3.loss { color: #ff4488; }
+    .report h3.done { color: #00ff88; }
+    .report table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
+    .report td.label { color: #aaa; padding: 4px 8px; }
+    .report td.value { color: #fff; padding: 4px 8px; }
+    .report td.desc { color: #666; padding: 0 8px 6px; font-size: 0.85em; }
+    .report .badge-good { color: #00ff88; font-weight: bold; }
+    .report .badge-ok { color: #ffaa00; font-weight: bold; }
+    .report .badge-bad { color: #ff4444; font-weight: bold; }
+    .report .error { color: #ff4444; }
+    .report .muted { color: #888; }
+    .report .tip { color: #888; margin-top: 10px; }
     """,
 ) as app:
-    gr.Markdown("# 🎵 Audio Enhancer & Analyzer")
+    gr.Markdown(f"# 🎵 {t('app_title')}")
 
     with gr.Tabs():
-        with gr.TabItem("Enhance"):
-            gr.Markdown("Upload audio and a trained checkpoint to enhance it to 96kHz/24-bit.")
+        with gr.TabItem(t("tab_enhance")):
+            gr.Markdown(t("enhance_desc"))
             with gr.Row():
                 with gr.Column(scale=1):
-                    enh_audio = gr.File(label="Audio File", file_types=AUDIO_FILE_TYPES)
-                    enh_checkpoint = gr.File(label="Model Checkpoint (.pt)", file_types=[".pt"])
-                    enh_skip_apollo = gr.Checkbox(label="Skip Apollo (input is lossless)", value=True)
-                    enh_skip_audiosr = gr.Checkbox(label="Skip AudioSR", value=True)
-                    enh_btn = gr.Button("Enhance", variant="primary", size="lg")
+                    enh_audio = gr.File(label=t("enhance_audio_label"), file_types=AUDIO_FILE_TYPES)
+                    enh_checkpoint = gr.File(label=t("enhance_checkpoint_label"), file_types=[".pt"])
+                    enh_skip_apollo = gr.Checkbox(label=t("enhance_skip_apollo"), value=True)
+                    enh_skip_audiosr = gr.Checkbox(label=t("enhance_skip_audiosr"), value=True)
+                    enh_btn = gr.Button(t("enhance_btn"), variant="primary", size="lg")
 
                 with gr.Column(scale=2):
-                    enh_report = gr.HTML(label="Enhancement Report")
-                    enh_output = gr.File(label="Enhanced Audio")
+                    enh_report = gr.HTML(label=t("enhance_report_label"))
+                    enh_output = gr.File(label=t("enhance_output_label"))
 
             enh_btn.click(
                 fn=enhance,
@@ -551,16 +556,16 @@ with gr.Blocks(
                 outputs=[enh_report, enh_output],
             )
 
-        with gr.TabItem("Analyze"):
-            gr.Markdown("Upload audio to see technical info, dynamics, spectrum, and perceptual quality metrics.")
+        with gr.TabItem(t("tab_analyze")):
+            gr.Markdown(t("analyze_desc"))
             with gr.Row():
                 with gr.Column(scale=1):
-                    audio_input = gr.File(label="Audio File", file_types=AUDIO_FILE_TYPES)
-                    ref_input = gr.File(label="Reference File (optional)", file_types=AUDIO_FILE_TYPES)
-                    analyze_btn = gr.Button("Analyze", variant="primary", size="lg")
+                    audio_input = gr.File(label=t("analyze_audio_label"), file_types=AUDIO_FILE_TYPES)
+                    ref_input = gr.File(label=t("analyze_ref_label"), file_types=AUDIO_FILE_TYPES)
+                    analyze_btn = gr.Button(t("analyze_btn"), variant="primary", size="lg")
 
                 with gr.Column(scale=2):
-                    report_html = gr.HTML(label="Analysis Report")
+                    report_html = gr.HTML(label=t("analyze_report_label"))
 
             plot_output = gr.Plot(label="Waveform & Spectrogram")
 
@@ -571,4 +576,9 @@ with gr.Blocks(
             )
 
 if __name__ == "__main__":
-    app.launch(server_name="0.0.0.0", server_port=7860)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--lang", default="en", choices=["en", "ru"], help="UI language")
+    parser.add_argument("--port", default=7860, type=int)
+    args = parser.parse_args()
+    _current_locale.update(load_locale(args.lang))
+    app.launch(server_name="0.0.0.0", server_port=args.port)
