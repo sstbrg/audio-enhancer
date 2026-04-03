@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Audio Enhancement Pipeline — Upscale any audio to 192kHz/32-bit.
+"""Audio Enhancement Pipeline — Upscale any audio to 96kHz/24-bit.
 
 Multi-stage pipeline:
   Stage 1: Apollo — Restore lossy compression artifacts (MP3/AAC -> lossless quality)
   Stage 2: AudioSR — Neural bandwidth extension to 48kHz
-  Stage 3: Custom GAN — Upsample 48kHz -> 192kHz with harmonic generation
-  Stage 4: Output as 32-bit float WAV/FLAC
+  Stage 3: Custom GAN — Upsample 48kHz -> 96kHz with harmonic generation
+  Stage 4: Output as 24-bit WAV/FLAC
 
 Usage:
     # Full pipeline (requires trained GAN checkpoint):
@@ -405,7 +405,7 @@ def main():
     output_path = Path(args.output)
 
     audio_exts = {".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".wma",
-                  ".aiff", ".aif", ".opus", ".alac"}
+                  ".aiff", ".aif", ".opus", ".alac", ".webm"}
 
     if input_path.is_file():
         # Single file
