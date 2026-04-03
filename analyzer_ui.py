@@ -523,9 +523,91 @@ def analyze(audio_file, ref_file, lang="English"):
     except Exception as e:
         html += f'<p class="muted">Music analysis: {e}</p>'
 
-    # Reference comparison
+    # Before vs After comparison (when reference provided)
     if ref_file is not None:
         ref_file = _convert_if_needed(ref_file)
+
+        # Side-by-side metrics comparison
+        try:
+            ref_info = analyze_file_info(ref_file)
+            ref_levels = analyze_levels(ref_file)
+            try:
+                ref_spec = analyze_spectrum(ref_file)
+            except Exception:
+                ref_spec = {}
+
+            html += f'<h3 class="ref">{t("section_comparison")}</h3>'
+            html += f'<p class="desc">{t("desc_comparison")}</p>'
+            html += '<table>'
+            html += f'<tr><td class="label"><b>{t("col_metric")}</b></td><td class="value"><b>{t("col_original")}</b></td><td class="value"><b>{t("col_enhanced")}</b></td><td class="value"><b>{t("col_change")}</b></td></tr>'
+
+            # Sample rate
+            html += f'<tr><td class="label">{t("metric_sample_rate")}</td><td class="value">{ref_info["sample_rate"]:,} Hz</td><td class="value">{info["sample_rate"]:,} Hz</td>'
+            sr_delta = info["sample_rate"] - ref_info["sample_rate"]
+            if sr_delta > 0:
+                html += f'<td class="badge-good">+{sr_delta:,} Hz</td></tr>'
+            elif sr_delta < 0:
+                html += f'<td class="badge-bad">{sr_delta:,} Hz</td></tr>'
+            else:
+                html += f'<td class="muted">{t("unchanged")}</td></tr>'
+
+            # Dynamic range
+            html += f'<tr><td class="label">{t("metric_dynamic_range")}</td><td class="value">{ref_levels["dynamic_range_db"]:.1f} dB</td><td class="value">{levels["dynamic_range_db"]:.1f} dB</td>'
+            dr_delta = levels["dynamic_range_db"] - ref_levels["dynamic_range_db"]
+            if dr_delta > 0.5:
+                html += f'<td class="badge-good">+{dr_delta:.1f} dB {t("improved")}</td></tr>'
+            elif dr_delta < -0.5:
+                html += f'<td class="badge-bad">{dr_delta:.1f} dB {t("degraded")}</td></tr>'
+            else:
+                html += f'<td class="muted">{t("unchanged")}</td></tr>'
+
+            # Crest factor
+            html += f'<tr><td class="label">{t("metric_crest_factor")}</td><td class="value">{ref_levels["crest_factor_db"]:.1f} dB</td><td class="value">{levels["crest_factor_db"]:.1f} dB</td>'
+            cf_delta = levels["crest_factor_db"] - ref_levels["crest_factor_db"]
+            if cf_delta > 0.5:
+                html += f'<td class="badge-good">+{cf_delta:.1f} dB {t("improved")}</td></tr>'
+            elif cf_delta < -0.5:
+                html += f'<td class="badge-bad">{cf_delta:.1f} dB {t("degraded")}</td></tr>'
+            else:
+                html += f'<td class="muted">{t("unchanged")}</td></tr>'
+
+            # Clipping
+            html += f'<tr><td class="label">{t("metric_clipping")}</td><td class="value">{ref_levels["clip_pct"]:.3f}%</td><td class="value">{levels["clip_pct"]:.3f}%</td>'
+            clip_delta = levels["clip_pct"] - ref_levels["clip_pct"]
+            if clip_delta < -0.001:
+                html += f'<td class="badge-good">{clip_delta:.3f}% {t("improved")}</td></tr>'
+            elif clip_delta > 0.001:
+                html += f'<td class="badge-bad">+{clip_delta:.3f}% {t("degraded")}</td></tr>'
+            else:
+                html += f'<td class="muted">{t("unchanged")}</td></tr>'
+
+            # Spectral rolloff
+            if spec and ref_spec:
+                html += f'<tr><td class="label">{t("metric_spectral_rolloff")}</td><td class="value">{ref_spec["spectral_rolloff_95_hz"]:,.0f} Hz</td><td class="value">{spec["spectral_rolloff_95_hz"]:,.0f} Hz</td>'
+                ro_delta = spec["spectral_rolloff_95_hz"] - ref_spec["spectral_rolloff_95_hz"]
+                if ro_delta > 500:
+                    html += f'<td class="badge-good">+{ro_delta:,.0f} Hz {t("improved")}</td></tr>'
+                elif ro_delta < -500:
+                    html += f'<td class="badge-bad">{ro_delta:,.0f} Hz {t("degraded")}</td></tr>'
+                else:
+                    html += f'<td class="muted">{t("unchanged")}</td></tr>'
+
+            # Stereo width
+            if "stereo_width" in levels and "stereo_width" in ref_levels:
+                html += f'<tr><td class="label">{t("metric_stereo_width")}</td><td class="value">{ref_levels["stereo_width"]:.4f}</td><td class="value">{levels["stereo_width"]:.4f}</td>'
+                sw_delta = levels["stereo_width"] - ref_levels["stereo_width"]
+                if abs(sw_delta) < 0.01:
+                    html += f'<td class="muted">{t("unchanged")}</td></tr>'
+                elif sw_delta > 0:
+                    html += f'<td class="badge-ok">+{sw_delta:.4f}</td></tr>'
+                else:
+                    html += f'<td class="badge-ok">{sw_delta:.4f}</td></tr>'
+
+            html += '</table>'
+        except Exception as e:
+            html += f'<p class="muted">Comparison: {e}</p>'
+
+        # Reference-based metrics
         try:
             from metrics.evaluate import AudioMetrics
             m = AudioMetrics()

@@ -127,6 +127,16 @@
   "verdict_low": "Low potential — file is already high quality. Enhancement may add subtle detail.",
   "verdict_none": "Already optimal — file exceeds target quality. No enhancement needed.",
 
+  "section_comparison": "Before vs After Comparison",
+  "desc_comparison": "Side-by-side comparison of original and processed audio. Green = improved, Red = degraded.",
+  "col_metric": "Metric",
+  "col_original": "Original",
+  "col_enhanced": "Enhanced",
+  "col_change": "Change",
+  "improved": "improved",
+  "degraded": "degraded",
+  "unchanged": "unchanged",
+
   "clip_clean": "clean",
   "clip_mild": "mild",
   "clip_clipped": "clipped",
