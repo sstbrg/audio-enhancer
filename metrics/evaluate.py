@@ -211,55 +211,48 @@ class AudioMetrics:
         """ViSQOL: Google's perceptual quality metric.
 
         Returns MOS-LQO score (1-5). Used by Apollo for evaluation.
-        Install: pip install git+https://github.com/diggerdu/visqol-py.git
+        Install: pip install pyvisqol
         """
         try:
             if self._visqol is None:
                 try:
-                    # Try official API first
-                    from visqol import visqol_lib_py
-                    from visqol.pb2 import visqol_config_pb2
-                    import os
-
-                    config = visqol_config_pb2.VisqolConfig()
-                    config.audio.sample_rate = 48000
-                    config.options.use_speech_scoring = False
-                    config.options.svr_model_path = os.path.join(
-                        os.path.dirname(visqol_lib_py.__file__),
-                        "model", "libsvm_nu_svr_model.txt"
-                    )
-                    api = visqol_lib_py.VisqolApi()
-                    api.Create(config)
-                    self._visqol = ("official", api)
+                    # Try pyvisqol (pre-built binary)
+                    from pyvisqol import Visqol
+                    self._visqol = ("pyvisqol", Visqol())
                 except ImportError:
-                    # Try community wrapper
-                    import visqol_py
-                    self._visqol = ("wrapper", visqol_py.ViSQOL(mode=visqol_py.ViSQOLMode.AUDIO))
+                    try:
+                        # Try official API
+                        from visqol import visqol_lib_py
+                        from visqol.pb2 import visqol_config_pb2
+                        import os
 
-            # Load at 48kHz for ViSQOL audio mode
-            ref = _load_audio_tensor(reference_path, 48000).numpy()
-            deg = _load_audio_tensor(degraded_path, 48000).numpy()
-
-            # Align lengths
-            min_len = min(len(ref), len(deg))
-            ref = ref[:min_len]
-            deg = deg[:min_len]
+                        config = visqol_config_pb2.VisqolConfig()
+                        config.audio.sample_rate = 48000
+                        config.options.use_speech_scoring = False
+                        config.options.svr_model_path = os.path.join(
+                            os.path.dirname(visqol_lib_py.__file__),
+                            "model", "libsvm_nu_svr_model.txt"
+                        )
+                        api = visqol_lib_py.VisqolApi()
+                        api.Create(config)
+                        self._visqol = ("official", api)
+                    except ImportError:
+                        raise ImportError("No ViSQOL package found")
 
             kind, api = self._visqol
-            if kind == "official":
-                result = api.Measure(ref, deg)
-                score = result.moslqo
-            else:
-                result = api.measure(reference_path, degraded_path)
+            if kind == "pyvisqol":
+                score = api.measure(reference_path, degraded_path)
+            elif kind == "official":
+                ref = _load_audio_tensor(reference_path, 48000).numpy()
+                deg = _load_audio_tensor(degraded_path, 48000).numpy()
+                min_len = min(len(ref), len(deg))
+                result = api.Measure(ref[:min_len], deg[:min_len])
                 score = result.moslqo
 
             return MetricResult("ViSQOL", float(score), higher_is_better=True,
                                 description="Perceptual MOS-LQO (1-5)")
         except ImportError:
-            warnings.warn(
-                "ViSQOL not installed. Install with:\n"
-                "  pip install git+https://github.com/diggerdu/visqol-py.git"
-            )
+            warnings.warn("ViSQOL not installed. pip install pyvisqol")
             return MetricResult("ViSQOL", float("nan"), higher_is_better=True,
                                 description="Not available")
 
