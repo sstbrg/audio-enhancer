@@ -54,11 +54,30 @@ def analyze_levels(path: str) -> dict:
 
     dr = float(np.percentile(frame_rms, 95) - np.percentile(frame_rms, 10)) if frame_rms else 0.0
 
+    # Clipping / saturation detection
+    clip_threshold = 0.99
+    clipped_samples = np.sum(np.abs(mono) >= clip_threshold)
+    clip_pct = clipped_samples / len(mono) * 100
+
+    # Inter-sample peak detection (samples that would clip after DAC reconstruction)
+    # Simple check: consecutive near-max samples indicate true clipping vs transient peaks
+    consecutive_clips = 0
+    max_consecutive = 0
+    for s in np.abs(mono):
+        if s >= clip_threshold:
+            consecutive_clips += 1
+            max_consecutive = max(max_consecutive, consecutive_clips)
+        else:
+            consecutive_clips = 0
+
     result = {
         "peak_db": round(float(peak_db), 2),
         "rms_db": round(float(rms_db), 2),
         "crest_factor_db": round(float(crest_factor_db), 2),
         "dynamic_range_db": round(dr, 2),
+        "clipped_samples": int(clipped_samples),
+        "clip_pct": round(float(clip_pct), 4),
+        "max_consecutive_clips": int(max_consecutive),
     }
 
     if data.shape[1] >= 2:
@@ -185,20 +204,32 @@ def analyze(audio_file, ref_file=None):
     <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">
         <tr><td style="color: #aaa; padding: 4px 8px;">Peak Level</td>
             <td style="color: #fff; padding: 4px 8px;">{levels['peak_db']:.1f} dBFS</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Loudest moment in the track. 0 dBFS = digital maximum.</td></tr>
         <tr><td style="color: #aaa; padding: 4px 8px;">RMS Level</td>
             <td style="color: #fff; padding: 4px 8px;">{levels['rms_db']:.1f} dBFS</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Average perceived loudness. Typical mastered music: -14 to -8 dBFS.</td></tr>
         <tr><td style="color: #aaa; padding: 4px 8px;">Crest Factor</td>
             <td style="padding: 4px 8px;">{quality_badge(levels['crest_factor_db'], (6, 10))} dB</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Peak-to-RMS ratio. Higher = more transient punch. Below 6 dB = "loudness war" crushed.</td></tr>
         <tr><td style="color: #aaa; padding: 4px 8px;">Dynamic Range</td>
             <td style="padding: 4px 8px;">{quality_badge(levels['dynamic_range_db'], (6, 10))} dB</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Difference between loud and quiet sections. Higher = more musical expression.</td></tr>
+        <tr><td style="color: #aaa; padding: 4px 8px;">Clipping</td>
+            <td style="padding: 4px 8px;">{quality_badge(100 - levels['clip_pct'], (99.5, 99.99))} ({levels['clipped_samples']:,} samples, {levels['clip_pct']:.3f}%)</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Samples at digital maximum. Any clipping = distortion. Well-mastered tracks have zero.</td></tr>
+        <tr><td style="color: #aaa; padding: 4px 8px;">Max Consecutive Clips</td>
+            <td style="padding: 4px 8px;">{"<span style='color: #00ff88;'>0</span>" if levels['max_consecutive_clips'] == 0 else f"<span style='color: #ff4444;'>{levels['max_consecutive_clips']}</span>"}</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Consecutive clipped samples indicate hard limiting/brick-wall clipping. Over 3 = audible distortion.</td></tr>
     """
 
     if "stereo_width" in levels:
         html += f"""
         <tr><td style="color: #aaa; padding: 4px 8px;">Stereo Width</td>
             <td style="color: #fff; padding: 4px 8px;">{levels['stereo_width']:.4f}</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Side-to-mid energy ratio. 0 = mono, higher = wider stereo image.</td></tr>
         <tr><td style="color: #aaa; padding: 4px 8px;">L/R Correlation</td>
             <td style="padding: 4px 8px;">{quality_badge(levels['lr_correlation'], (0.3, 0.5))}</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">How similar L and R channels are. Near 1.0 = essentially mono. Below 0.3 = phase issues.</td></tr>
         """
 
     html += "</table>"
@@ -209,12 +240,16 @@ def analyze(audio_file, ref_file=None):
         <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">
             <tr><td style="color: #aaa; padding: 4px 8px;">Spectral Centroid</td>
                 <td style="color: #fff; padding: 4px 8px;">{spec['spectral_centroid_hz']:,.0f} Hz</td></tr>
+            <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">"Center of gravity" of the frequency spectrum. Higher = brighter sounding music.</td></tr>
             <tr><td style="color: #aaa; padding: 4px 8px;">Spectral Bandwidth</td>
                 <td style="color: #fff; padding: 4px 8px;">{spec['spectral_bandwidth_hz']:,.0f} Hz</td></tr>
+            <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Spread of frequencies present. Wider = richer, more complex harmonic content.</td></tr>
             <tr><td style="color: #aaa; padding: 4px 8px;">Rolloff (95%)</td>
                 <td style="color: #fff; padding: 4px 8px;">{spec['spectral_rolloff_95_hz']:,.0f} Hz</td></tr>
+            <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Frequency below which 95% of energy sits. Reveals effective bandwidth of the recording.</td></tr>
             <tr><td style="color: #aaa; padding: 4px 8px;">Nyquist</td>
                 <td style="color: #fff; padding: 4px 8px;">{spec['nyquist_hz']:,.0f} Hz</td></tr>
+            <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Maximum representable frequency at this sample rate (sample_rate / 2).</td></tr>
         </table>
         """
 
@@ -224,14 +259,22 @@ def analyze(audio_file, ref_file=None):
         m = AudioMetrics()
         ab = m.audiobox_aesthetics(path)
         if isinstance(ab.score, dict):
+            descriptions = {
+                "PQ": "Clarity, fidelity, frequency balance, and spatial imaging of the mix.",
+                "CE": "How pleasant and engaging the music feels to listen to.",
+                "PC": "Arrangement complexity: layers, instruments, rhythmic variation.",
+                "CU": "How well-suited the audio is for professional use (sync, broadcast).",
+            }
             html += """<h3 style="color: #00d4ff; margin-bottom: 5px;">🎧 Perceptual Quality (Audiobox)</h3>
             <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">"""
             labels = {"PQ": "Production Quality", "CE": "Enjoyment",
                       "PC": "Complexity", "CU": "Usefulness"}
             for k, v in ab.score.items():
                 badge = quality_badge(v, (4, 6)) if k == "PQ" else f'<span style="color: #fff;">{v:.2f}</span>'
+                desc = descriptions.get(k, "")
                 html += f"""<tr><td style="color: #aaa; padding: 4px 8px;">{labels.get(k, k)}</td>
-                    <td style="padding: 4px 8px;">{badge} / 10</td></tr>"""
+                    <td style="padding: 4px 8px;">{badge} / 10</td></tr>
+                    <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">{desc}</td></tr>"""
             html += "</table>"
     except Exception as e:
         html += f'<p style="color: #888;">Audiobox not available: {e}</p>'
@@ -250,8 +293,10 @@ def analyze(audio_file, ref_file=None):
             html += f"""
                 <tr><td style="color: #aaa; padding: 4px 8px;">SI-SNR</td>
                     <td style="padding: 4px 8px;">{quality_badge(sisnr.score, (10, 20))} dB</td></tr>
+                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">How closely the signal matches the reference, ignoring volume differences. Higher = more faithful.</td></tr>
                 <tr><td style="color: #aaa; padding: 4px 8px;">SDR</td>
                     <td style="padding: 4px 8px;">{quality_badge(sdr.score, (10, 20))} dB</td></tr>
+                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Overall signal quality vs distortion. Measures everything the enhancement added or removed.</td></tr>
             """
 
             chroma = m.chroma_similarity(ref_file, path)
@@ -260,10 +305,13 @@ def analyze(audio_file, ref_file=None):
             html += f"""
                 <tr><td style="color: #aaa; padding: 4px 8px;">Chroma (melody)</td>
                     <td style="padding: 4px 8px;">{quality_badge(chroma.score, (0.9, 0.95))}</td></tr>
+                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Are the notes and harmonies preserved? Catches pitch shifts or key changes.</td></tr>
                 <tr><td style="color: #aaa; padding: 4px 8px;">MFCC (timbre)</td>
                     <td style="padding: 4px 8px;">{quality_badge(mfcc.score, (0.85, 0.9))}</td></tr>
+                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Does the "character" of instruments sound the same? Catches tonal coloring artifacts.</td></tr>
                 <tr><td style="color: #aaa; padding: 4px 8px;">Onset F1 (rhythm)</td>
                     <td style="padding: 4px 8px;">{quality_badge(onset.score, (0.8, 0.9))}</td></tr>
+                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Are the beats and note attacks in the right place? Catches timing smear from processing.</td></tr>
             """
             html += "</table>"
         except Exception as e:
