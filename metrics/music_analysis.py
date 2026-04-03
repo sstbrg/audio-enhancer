@@ -63,13 +63,11 @@ class MusicAnalyzer:
         return results
 
     def essentia_analysis(self, audio_path: str) -> dict | None:
-        """Analyze with Essentia: key, BPM, genre, mood, danceability."""
+        """Analyze with Essentia: key, BPM."""
         try:
-            from essentia.standard import (
-                MonoLoader, KeyExtractor, RhythmExtractor2013,
-                TensorflowPredictEffnetDiscogs, TensorflowPredict2D,
-            )
-            from essentia import Pool
+            import essentia
+            essentia.log.warningActive = False
+            from essentia.standard import MonoLoader, KeyExtractor, RhythmExtractor2013
 
             audio = MonoLoader(filename=audio_path, sampleRate=16000)()
 
