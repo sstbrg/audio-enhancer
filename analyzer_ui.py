@@ -205,12 +205,33 @@ def quality_badge(value: float, thresholds: tuple) -> str:
         return f'<span style="color: #ff4444; font-weight: bold;">{value:.2f} ✗</span>'
 
 
+def _convert_if_needed(path: str) -> str:
+    """Convert unsupported formats (webm, etc.) to wav via ffmpeg."""
+    import subprocess, tempfile
+    ext = Path(path).suffix.lower()
+    if ext in (".wav", ".flac", ".aiff", ".aif"):
+        return path
+    try:
+        # Try soundfile first
+        sf.info(path)
+        return path
+    except Exception:
+        pass
+    # Convert via ffmpeg
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp.close()
+    subprocess.run(["ffmpeg", "-y", "-i", path, "-ar", "48000", "-ac", "2", tmp.name],
+                   capture_output=True, check=True)
+    return tmp.name
+
+
 def analyze(audio_file, ref_file=None):
     """Main analysis function called by Gradio."""
     if audio_file is None:
-        return "Upload an audio file to analyze.", None, ""
+        return "Upload an audio file to analyze.", None
 
     path = audio_file
+    path = _convert_if_needed(path)
 
     # File info
     info = analyze_file_info(path)
@@ -250,32 +271,32 @@ def analyze(audio_file, ref_file=None):
     <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">
         <tr><td style="color: #aaa; padding: 4px 8px;">Peak Level</td>
             <td style="color: #fff; padding: 4px 8px;">{levels['peak_db']:.1f} dBFS</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Loudest moment in the track. 0 dBFS = digital maximum.</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Loudest moment in the track. 0 dBFS = digital maximum. Typical: -1 to -0.1 dBFS for mastered music.</td></tr>
         <tr><td style="color: #aaa; padding: 4px 8px;">RMS Level</td>
             <td style="color: #fff; padding: 4px 8px;">{levels['rms_db']:.1f} dBFS</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Average perceived loudness. Typical mastered music: -14 to -8 dBFS.</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Average perceived loudness. Streaming targets: -14 LUFS (Spotify), -16 LUFS (Apple). Loudness war: above -8.</td></tr>
         <tr><td style="color: #aaa; padding: 4px 8px;">Crest Factor</td>
             <td style="padding: 4px 8px;">{quality_badge(levels['crest_factor_db'], (6, 10))} dB</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Peak-to-RMS ratio. Higher = more transient punch. Below 6 dB = "loudness war" crushed.</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Peak-to-RMS ratio. Higher = more transient punch. Typical: 10-18 dB (well mastered), 4-6 dB (crushed/loudness war).</td></tr>
         <tr><td style="color: #aaa; padding: 4px 8px;">Dynamic Range</td>
             <td style="padding: 4px 8px;">{quality_badge(levels['dynamic_range_db'], (6, 10))} dB</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Difference between loud and quiet sections. Higher = more musical expression.</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Difference between loud and quiet sections. Typical: 12+ dB (classical/jazz), 8-12 dB (rock/pop), &lt;6 dB (EDM/compressed).</td></tr>
         <tr><td style="color: #aaa; padding: 4px 8px;">Clipping</td>
-            <td style="padding: 4px 8px;">{quality_badge(100 - levels['clip_pct'], (99.5, 99.99))} ({levels['clipped_samples']:,} samples, {levels['clip_pct']:.3f}%)</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Samples at digital maximum. Any clipping = distortion. Well-mastered tracks have zero.</td></tr>
+            <td style="padding: 4px 8px;">{"<span style='color: #00ff88; font-weight: bold;'>0% clean</span>" if levels['clip_pct'] == 0 else "<span style='color: #ffaa00; font-weight: bold;'>" + f"{levels['clip_pct']:.3f}% mild</span>" if levels['clip_pct'] < 0.1 else "<span style='color: #ff8800; font-weight: bold;'>" + f"{levels['clip_pct']:.3f}% clipped</span>" if levels['clip_pct'] < 0.5 else "<span style='color: #ff4444; font-weight: bold;'>" + f"{levels['clip_pct']:.3f}% heavy</span>"} ({levels['clipped_samples']:,} samples)</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Samples at digital maximum. 0% = clean headroom, 0.01-0.1% = brief peaks (often acceptable), 0.1-0.5% = mildly clipped, &gt;0.5% = significant clipping.</td></tr>
         <tr><td style="color: #aaa; padding: 4px 8px;">Max Consecutive Clips</td>
             <td style="padding: 4px 8px;">{"<span style='color: #00ff88;'>0</span>" if levels['max_consecutive_clips'] == 0 else f"<span style='color: #ff4444;'>{levels['max_consecutive_clips']}</span>"}</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Consecutive clipped samples indicate hard limiting/brick-wall clipping. Over 3 = audible distortion.</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Consecutive clipped samples indicate hard limiting/brick-wall clipping. 0 = clean, 1-3 = intersample peaks, 4+ = audible distortion.</td></tr>
     """
 
     if "stereo_width" in levels:
         html += f"""
         <tr><td style="color: #aaa; padding: 4px 8px;">Stereo Width</td>
             <td style="color: #fff; padding: 4px 8px;">{levels['stereo_width']:.4f}</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Side-to-mid energy ratio. 0 = mono, higher = wider stereo image.</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Side-to-mid energy ratio. 0 = mono, 0.1-0.3 = typical mix, &gt;0.5 = very wide/spatial.</td></tr>
         <tr><td style="color: #aaa; padding: 4px 8px;">L/R Correlation</td>
             <td style="padding: 4px 8px;">{quality_badge(levels['lr_correlation'], (0.3, 0.5))}</td></tr>
-        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">How similar L and R channels are. Near 1.0 = essentially mono. Below 0.3 = phase issues.</td></tr>
+        <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">How similar L and R channels are. Typical: 0.5-0.9. Near 1.0 = mono. Below 0.3 = possible phase issues.</td></tr>
         """
 
     html += "</table>"
@@ -286,13 +307,13 @@ def analyze(audio_file, ref_file=None):
         <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">
             <tr><td style="color: #aaa; padding: 4px 8px;">Spectral Centroid</td>
                 <td style="color: #fff; padding: 4px 8px;">{spec['spectral_centroid_hz']:,.0f} Hz</td></tr>
-            <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">"Center of gravity" of the frequency spectrum. Higher = brighter sounding music.</td></tr>
+            <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">"Center of gravity" of the frequency spectrum. Typical: 1000-3000 Hz (pop/rock), 500-1500 Hz (bass-heavy), 3000+ Hz (bright/electronic).</td></tr>
             <tr><td style="color: #aaa; padding: 4px 8px;">Spectral Bandwidth</td>
                 <td style="color: #fff; padding: 4px 8px;">{spec['spectral_bandwidth_hz']:,.0f} Hz</td></tr>
-            <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Spread of frequencies present. Wider = richer, more complex harmonic content.</td></tr>
+            <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Spread of frequencies present. Typical: 2000-4000 Hz. Higher = richer harmonics and more complex arrangement.</td></tr>
             <tr><td style="color: #aaa; padding: 4px 8px;">Rolloff (95%)</td>
                 <td style="color: #fff; padding: 4px 8px;">{spec['spectral_rolloff_95_hz']:,.0f} Hz</td></tr>
-            <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Frequency below which 95% of energy sits. Reveals effective bandwidth of the recording.</td></tr>
+            <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Frequency below which 95% of energy sits. Typical: 8-15 kHz (MP3/compressed), 16-20 kHz (CD), 20+ kHz (hi-res).</td></tr>
             <tr><td style="color: #aaa; padding: 4px 8px;">Nyquist</td>
                 <td style="color: #fff; padding: 4px 8px;">{spec['nyquist_hz']:,.0f} Hz</td></tr>
             <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Maximum representable frequency at this sample rate (sample_rate / 2).</td></tr>
@@ -306,10 +327,10 @@ def analyze(audio_file, ref_file=None):
         ab = m.audiobox_aesthetics(path)
         if isinstance(ab.score, dict):
             descriptions = {
-                "PQ": "Clarity, fidelity, frequency balance, and spatial imaging of the mix.",
-                "CE": "How pleasant and engaging the music feels to listen to.",
-                "PC": "Arrangement complexity: layers, instruments, rhythmic variation.",
-                "CU": "How well-suited the audio is for professional use (sync, broadcast).",
+                "PQ": "Clarity, fidelity, frequency balance, and spatial imaging. Typical: 4-6 (amateur), 6-8 (professional), 8+ (studio master).",
+                "CE": "How pleasant and engaging the music feels. Typical: 3-5 (background), 5-7 (good), 7+ (highly engaging).",
+                "PC": "Arrangement complexity: layers, instruments, rhythmic variation. Typical: 2-4 (simple), 5-7 (full band), 7+ (orchestral/dense).",
+                "CU": "How well-suited for professional use (sync, broadcast). Typical: 3-5 (lo-fi/demo), 6-8 (broadcast ready), 8+ (premium).",
             }
             html += """<h3 style="color: #00d4ff; margin-bottom: 5px;">🎧 Perceptual Quality (Audiobox)</h3>
             <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">"""
@@ -327,6 +348,7 @@ def analyze(audio_file, ref_file=None):
 
     # Reference comparison
     if ref_file is not None:
+        ref_file = _convert_if_needed(ref_file)
         try:
             from metrics.evaluate import AudioMetrics
             m = AudioMetrics()
@@ -339,10 +361,10 @@ def analyze(audio_file, ref_file=None):
             html += f"""
                 <tr><td style="color: #aaa; padding: 4px 8px;">SI-SNR</td>
                     <td style="padding: 4px 8px;">{quality_badge(sisnr.score, (10, 20))} dB</td></tr>
-                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">How closely the signal matches the reference, ignoring volume differences. Higher = more faithful.</td></tr>
+                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">How closely the signal matches the reference, ignoring volume. Typical: 15-25 dB (good), 25+ dB (transparent), &lt;10 dB (significant artifacts).</td></tr>
                 <tr><td style="color: #aaa; padding: 4px 8px;">SDR</td>
                     <td style="padding: 4px 8px;">{quality_badge(sdr.score, (10, 20))} dB</td></tr>
-                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Overall signal quality vs distortion. Measures everything the enhancement added or removed.</td></tr>
+                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Overall signal quality vs distortion. Typical: 15-25 dB (good enhancement), 25+ dB (near-transparent), &lt;10 dB (heavy processing).</td></tr>
             """
 
             chroma = m.chroma_similarity(ref_file, path)
@@ -351,13 +373,13 @@ def analyze(audio_file, ref_file=None):
             html += f"""
                 <tr><td style="color: #aaa; padding: 4px 8px;">Chroma (melody)</td>
                     <td style="padding: 4px 8px;">{quality_badge(chroma.score, (0.9, 0.95))}</td></tr>
-                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Are the notes and harmonies preserved? Catches pitch shifts or key changes.</td></tr>
+                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Are the notes and harmonies preserved? Typical: &gt;0.98 (transparent), 0.90-0.98 (minor coloring), &lt;0.90 (pitch/harmony damage).</td></tr>
                 <tr><td style="color: #aaa; padding: 4px 8px;">MFCC (timbre)</td>
                     <td style="padding: 4px 8px;">{quality_badge(mfcc.score, (0.85, 0.9))}</td></tr>
-                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Does the "character" of instruments sound the same? Catches tonal coloring artifacts.</td></tr>
+                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Does the "character" of instruments sound the same? Typical: &gt;0.95 (transparent), 0.85-0.95 (subtle EQ), &lt;0.85 (tonal shift).</td></tr>
                 <tr><td style="color: #aaa; padding: 4px 8px;">Onset F1 (rhythm)</td>
                     <td style="padding: 4px 8px;">{quality_badge(onset.score, (0.8, 0.9))}</td></tr>
-                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Are the beats and note attacks in the right place? Catches timing smear from processing.</td></tr>
+                <tr><td colspan="2" style="color: #666; padding: 0 8px 6px; font-size: 0.85em;">Are the beats and note attacks in the right place? Typical: &gt;0.95 (transparent), 0.85-0.95 (slight smear), &lt;0.85 (timing damage).</td></tr>
             """
             html += "</table>"
 
@@ -434,10 +456,14 @@ def analyze(audio_file, ref_file=None):
 
 with gr.Blocks(
     title="Audio Analyzer",
-    theme=gr.themes.Base(
+    theme=gr.themes.Default(
         primary_hue="cyan",
         neutral_hue="slate",
     ),
+    css="""
+    .gradio-container { background: #1a1a2e !important; }
+    .gr-button-primary { background: #00d4ff !important; }
+    """,
 ) as app:
     gr.Markdown("# 🎵 Audio Quality Analyzer")
     gr.Markdown("Upload an audio file to see technical info, dynamics, spectrum, and perceptual quality metrics.")
