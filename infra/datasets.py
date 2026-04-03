@@ -62,7 +62,7 @@ CATALOG = [
             30, "medleydb-v2.zip"),
     Dataset("musicnet", "MusicNet (classical)",        "url",
             "https://zenodo.org/records/5120004/files/musicnet.tar.gz?download=1",
-            12, "musicnet.tar.gz"),
+            11, "musicnet.tar.gz"),
 ]
 
 CATALOG_MAP = {ds.id: ds for ds in CATALOG}
