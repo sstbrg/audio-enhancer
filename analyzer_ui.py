@@ -573,7 +573,18 @@ with gr.Blocks(
     .report .tip { color: #999; margin-top: 10px; }
     """,
 ) as app:
-    gr.Markdown(f"# 🎵 {t('app_title')}")
+    with gr.Row():
+        gr.Markdown(f"# 🎵 {t('app_title')}")
+        lang_selector = gr.Radio(
+            choices=["English", "Русский"],
+            value="English" if "en" in str(LOCALES_DIR / "en.json") else "Русский",
+            label="🌐",
+            scale=0,
+        )
+    lang_selector.change(
+        fn=lambda l: gr.Info(f"Restart with: python analyzer_ui.py --lang {'ru' if 'Рус' in l else 'en'}"),
+        inputs=[lang_selector],
+    )
 
     with gr.Tabs():
         with gr.TabItem(t("tab_enhance")):
