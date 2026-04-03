@@ -36,12 +36,24 @@ def load_locale(lang: str = "en") -> dict:
         return json.load(f)
 
 
+_all_locales = {
+    "English": load_locale("en"),
+    "Русский": load_locale("ru"),
+}
+_current_lang = "English"
+
+
 def t(key: str) -> str:
     """Translate a key using the current locale."""
-    return _current_locale.get(key, key)
+    return _all_locales.get(_current_lang, _all_locales["English"]).get(key, key)
 
 
-# Load default locale at import time (overridden by --lang at runtime)
+def set_lang(lang: str):
+    global _current_lang
+    _current_lang = lang
+
+
+# Load default
 _current_locale.update(load_locale("en"))
 
 
@@ -281,8 +293,9 @@ def _section_loss(title_key: str) -> str:
     return f'<h3 class="loss">{t(title_key)}</h3><table>'
 
 
-def analyze(audio_file, ref_file=None):
+def analyze(audio_file, ref_file, lang="English"):
     """Main analysis function called by Gradio."""
+    set_lang(lang)
     if audio_file is None:
         return t("analyze_upload"), None
 
@@ -490,8 +503,9 @@ def analyze(audio_file, ref_file=None):
 AUDIO_FILE_TYPES = [".wav", ".flac", ".mp3", ".ogg", ".aac", ".aiff", ".m4a", ".wma", ".opus", ".webm"]
 
 
-def enhance(audio_file, checkpoint_file, skip_apollo, skip_audiosr):
+def enhance(audio_file, checkpoint_file, skip_apollo, skip_audiosr, lang="English"):
     """Enhance audio using the trained model."""
+    set_lang(lang)
     if audio_file is None:
         return t("enhance_upload_audio"), None
 
@@ -581,48 +595,41 @@ with gr.Blocks(
             label="🌐",
             scale=0,
         )
-    lang_selector.change(
-        fn=lambda l: gr.Info(f"Restart with: python analyzer_ui.py --lang {'ru' if 'Рус' in l else 'en'}"),
-        inputs=[lang_selector],
-    )
-
     with gr.Tabs():
-        with gr.TabItem(t("tab_enhance")):
-            gr.Markdown(t("enhance_desc"))
+        with gr.TabItem("Enhance / Улучшить"):
             with gr.Row():
                 with gr.Column(scale=1):
-                    enh_audio = gr.File(label=t("enhance_audio_label"), file_types=AUDIO_FILE_TYPES)
-                    enh_checkpoint = gr.File(label=t("enhance_checkpoint_label"), file_types=[".pt"])
-                    enh_skip_apollo = gr.Checkbox(label=t("enhance_skip_apollo"), value=True)
-                    enh_skip_audiosr = gr.Checkbox(label=t("enhance_skip_audiosr"), value=True)
-                    enh_btn = gr.Button(t("enhance_btn"), variant="primary", size="lg")
+                    enh_audio = gr.File(label="Audio / Аудио", file_types=AUDIO_FILE_TYPES)
+                    enh_checkpoint = gr.File(label="Checkpoint (.pt)", file_types=[".pt"])
+                    enh_skip_apollo = gr.Checkbox(label="Skip Apollo", value=True)
+                    enh_skip_audiosr = gr.Checkbox(label="Skip AudioSR", value=True)
+                    enh_btn = gr.Button("Enhance / Улучшить", variant="primary", size="lg")
 
                 with gr.Column(scale=2):
-                    enh_report = gr.HTML(label=t("enhance_report_label"))
-                    enh_output = gr.File(label=t("enhance_output_label"))
+                    enh_report = gr.HTML()
+                    enh_output = gr.File(label="Output")
 
             enh_btn.click(
                 fn=enhance,
-                inputs=[enh_audio, enh_checkpoint, enh_skip_apollo, enh_skip_audiosr],
+                inputs=[enh_audio, enh_checkpoint, enh_skip_apollo, enh_skip_audiosr, lang_selector],
                 outputs=[enh_report, enh_output],
             )
 
-        with gr.TabItem(t("tab_analyze")):
-            gr.Markdown(t("analyze_desc"))
+        with gr.TabItem("Analyze / Анализ"):
             with gr.Row():
                 with gr.Column(scale=1):
-                    audio_input = gr.File(label=t("analyze_audio_label"), file_types=AUDIO_FILE_TYPES)
-                    ref_input = gr.File(label=t("analyze_ref_label"), file_types=AUDIO_FILE_TYPES)
-                    analyze_btn = gr.Button(t("analyze_btn"), variant="primary", size="lg")
+                    audio_input = gr.File(label="Audio / Аудио", file_types=AUDIO_FILE_TYPES)
+                    ref_input = gr.File(label="Reference (optional)", file_types=AUDIO_FILE_TYPES)
+                    analyze_btn = gr.Button("Analyze / Анализ", variant="primary", size="lg")
 
                 with gr.Column(scale=2):
-                    report_html = gr.HTML(label=t("analyze_report_label"))
+                    report_html = gr.HTML()
 
             plot_output = gr.Plot(label="Waveform & Spectrogram")
 
             analyze_btn.click(
                 fn=analyze,
-                inputs=[audio_input, ref_input],
+                inputs=[audio_input, ref_input, lang_selector],
                 outputs=[report_html, plot_output],
             )
 
