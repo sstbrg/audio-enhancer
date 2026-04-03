@@ -324,7 +324,9 @@ def analyze(audio_file, ref_file=None):
     try:
         from metrics.evaluate import AudioMetrics
         m = AudioMetrics()
-        ab = m.audiobox_aesthetics(path)
+        # Audiobox needs a wav file (torchcodec can't handle webm/mp3 on some systems)
+        wav_path = _convert_if_needed(path)
+        ab = m.audiobox_aesthetics(wav_path)
         if isinstance(ab.score, dict):
             descriptions = {
                 "PQ": "Clarity, fidelity, frequency balance, and spatial imaging. Typical: 4-6 (amateur), 6-8 (professional), 8+ (studio master).",
@@ -452,10 +454,71 @@ def analyze(audio_file, ref_file=None):
     return html, fig
 
 
+AUDIO_FILE_TYPES = [".wav", ".flac", ".mp3", ".ogg", ".aac", ".aiff", ".m4a", ".wma", ".opus", ".webm"]
+
+
+def enhance(audio_file, checkpoint_file, skip_apollo, skip_audiosr):
+    """Enhance audio using the trained model."""
+    if audio_file is None:
+        return "Upload an audio file to enhance.", None
+
+    path = _convert_if_needed(audio_file)
+
+    if checkpoint_file is None:
+        return "Upload a model checkpoint (.pt file) to enhance audio.", None
+
+    try:
+        from enhance import AudioEnhancer
+        import tempfile
+
+        enhancer = AudioEnhancer(
+            config_path="configs/phase0.yaml",
+            gan_checkpoint=checkpoint_file,
+        )
+
+        stem = Path(audio_file).stem
+        out_path = tempfile.NamedTemporaryFile(suffix=f"_{stem}_enhanced.wav", delete=False).name
+
+        enhancer.enhance_file(
+            path, out_path,
+            use_apollo=not skip_apollo,
+            use_audiosr=not skip_audiosr,
+            use_gan=True,
+        )
+
+        info_before = analyze_file_info(audio_file)
+        info_after = analyze_file_info(out_path)
+
+        html = f"""
+        <div style="font-family: 'Segoe UI', sans-serif; padding: 10px;">
+        <h3 style="color: #00ff88;">Enhancement Complete</h3>
+        <table style="width: 100%; border-collapse: collapse;">
+            <tr><td style="color: #aaa; padding: 4px 8px;"></td>
+                <td style="color: #ff8800; padding: 4px 8px; font-weight: bold;">Before</td>
+                <td style="color: #00ff88; padding: 4px 8px; font-weight: bold;">After</td></tr>
+            <tr><td style="color: #aaa; padding: 4px 8px;">Sample Rate</td>
+                <td style="color: #fff; padding: 4px 8px;">{info_before['sample_rate']:,} Hz</td>
+                <td style="color: #00ff88; padding: 4px 8px;">{info_after['sample_rate']:,} Hz</td></tr>
+            <tr><td style="color: #aaa; padding: 4px 8px;">Bit Depth</td>
+                <td style="color: #fff; padding: 4px 8px;">{info_before['bit_depth']}</td>
+                <td style="color: #00ff88; padding: 4px 8px;">{info_after['bit_depth']}</td></tr>
+            <tr><td style="color: #aaa; padding: 4px 8px;">Format</td>
+                <td style="color: #fff; padding: 4px 8px;">{info_before['format']}</td>
+                <td style="color: #00ff88; padding: 4px 8px;">{info_after['format']}</td></tr>
+        </table>
+        <p style="color: #888; margin-top: 10px;">Tip: Use the Analyze tab to compare before/after quality metrics.</p>
+        </div>
+        """
+        return html, out_path
+
+    except Exception as e:
+        return f'<p style="color: #ff4444;">Enhancement error: {e}</p>', None
+
+
 # ── Gradio UI ─────────────────────────────────────────────────────────────────
 
 with gr.Blocks(
-    title="Audio Analyzer",
+    title="Audio Enhancer & Analyzer",
     theme=gr.themes.Default(
         primary_hue="cyan",
         neutral_hue="slate",
@@ -465,25 +528,47 @@ with gr.Blocks(
     .gr-button-primary { background: #00d4ff !important; }
     """,
 ) as app:
-    gr.Markdown("# 🎵 Audio Quality Analyzer")
-    gr.Markdown("Upload an audio file to see technical info, dynamics, spectrum, and perceptual quality metrics.")
+    gr.Markdown("# 🎵 Audio Enhancer & Analyzer")
 
-    with gr.Row():
-        with gr.Column(scale=1):
-            audio_input = gr.File(label="Audio File", file_types=[".wav", ".flac", ".mp3", ".ogg", ".aac", ".aiff", ".m4a", ".wma", ".opus", ".webm"])
-            ref_input = gr.File(label="Reference File (optional)", file_types=[".wav", ".flac", ".mp3", ".ogg", ".aac", ".aiff", ".m4a", ".wma", ".opus", ".webm"])
-            analyze_btn = gr.Button("Analyze", variant="primary", size="lg")
+    with gr.Tabs():
+        with gr.TabItem("Enhance"):
+            gr.Markdown("Upload audio and a trained checkpoint to enhance it to 96kHz/24-bit.")
+            with gr.Row():
+                with gr.Column(scale=1):
+                    enh_audio = gr.File(label="Audio File", file_types=AUDIO_FILE_TYPES)
+                    enh_checkpoint = gr.File(label="Model Checkpoint (.pt)", file_types=[".pt"])
+                    enh_skip_apollo = gr.Checkbox(label="Skip Apollo (input is lossless)", value=True)
+                    enh_skip_audiosr = gr.Checkbox(label="Skip AudioSR", value=True)
+                    enh_btn = gr.Button("Enhance", variant="primary", size="lg")
 
-        with gr.Column(scale=2):
-            report_html = gr.HTML(label="Analysis Report")
+                with gr.Column(scale=2):
+                    enh_report = gr.HTML(label="Enhancement Report")
+                    enh_output = gr.File(label="Enhanced Audio")
 
-    plot_output = gr.Plot(label="Waveform & Spectrogram")
+            enh_btn.click(
+                fn=enhance,
+                inputs=[enh_audio, enh_checkpoint, enh_skip_apollo, enh_skip_audiosr],
+                outputs=[enh_report, enh_output],
+            )
 
-    analyze_btn.click(
-        fn=analyze,
-        inputs=[audio_input, ref_input],
-        outputs=[report_html, plot_output],
-    )
+        with gr.TabItem("Analyze"):
+            gr.Markdown("Upload audio to see technical info, dynamics, spectrum, and perceptual quality metrics.")
+            with gr.Row():
+                with gr.Column(scale=1):
+                    audio_input = gr.File(label="Audio File", file_types=AUDIO_FILE_TYPES)
+                    ref_input = gr.File(label="Reference File (optional)", file_types=AUDIO_FILE_TYPES)
+                    analyze_btn = gr.Button("Analyze", variant="primary", size="lg")
+
+                with gr.Column(scale=2):
+                    report_html = gr.HTML(label="Analysis Report")
+
+            plot_output = gr.Plot(label="Waveform & Spectrogram")
+
+            analyze_btn.click(
+                fn=analyze,
+                inputs=[audio_input, ref_input],
+                outputs=[report_html, plot_output],
+            )
 
 if __name__ == "__main__":
     app.launch(server_name="0.0.0.0", server_port=7860)
