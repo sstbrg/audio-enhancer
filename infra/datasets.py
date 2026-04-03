@@ -47,7 +47,7 @@ CATALOG = [
             22, "musdb18hq.zip"),
     Dataset("vctk",     "VCTK 96kHz (speech)",         "url",
             "https://datashare.ed.ac.uk/bitstream/handle/10283/2774/VCTK-Corpus-0.92.zip?sequence=2&isAllowed=y",
-            11.2, "vctk96k.zip"),
+            20, "vctk96k.zip"),
     Dataset("moisesdb", "MoisesDB (music stems)",      "python",
             "download_moisesdb",
             25, "moisesdb"),
@@ -126,6 +126,17 @@ def is_downloading(ds: Dataset) -> bool:
     return False
 
 
+def is_uploading(ds: Dataset) -> bool:
+    try:
+        out = subprocess.check_output(["pgrep", "-af", ds.filename], stderr=subprocess.DEVNULL, text=True)
+        for line in out.strip().split("\n"):
+            if "rclone" in line:
+                return True
+    except subprocess.CalledProcessError:
+        pass
+    return False
+
+
 def is_on_drive(ds: Dataset) -> bool:
     try:
         result = subprocess.run(
@@ -178,11 +189,21 @@ def show_status():
         drive_str = f"{C_GREEN}yes{C_NC}" if on_drive else f"{C_DIM} - {C_NC}"
 
         # Status
-        if is_downloading(ds):
+        uploading = is_uploading(ds)
+        downloading = is_downloading(ds)
+
+        if uploading:
+            status = f"{C_BLUE}uploading to Drive{C_NC}"
+        elif downloading:
             pct = min(100, int(local_bytes * 100 / expected_bytes)) if expected_bytes > 0 else 0
             status = f"{C_YELLOW}{progress_bar(pct, 15)} {pct}%{C_NC}"
+        elif on_drive and local_bytes == 0:
+            status = f"{C_GREEN}on Drive{C_NC}"
         elif local_bytes > 0 and local_bytes >= expected_bytes * 0.9:
-            status = f"{C_GREEN}ready{C_NC}"
+            if on_drive:
+                status = f"{C_GREEN}ready + Drive{C_NC}"
+            else:
+                status = f"{C_GREEN}ready{C_NC}"
         elif local_bytes > 0:
             pct = min(100, int(local_bytes * 100 / expected_bytes)) if expected_bytes > 0 else 0
             status = f"{C_RED}partial ({pct}%){C_NC}"
