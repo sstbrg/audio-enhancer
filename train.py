@@ -14,6 +14,7 @@ The training process:
 """
 
 import argparse
+import os
 import time
 from pathlib import Path
 
@@ -165,7 +166,15 @@ def train(args):
     train_cfg = gan_cfg["training"]
     output_sr = config["output"]["sample_rate"]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+
+    # Performance flags
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True  # Auto-tune convolution algorithms
+    use_amp = device.type == "cuda"
+    scaler_g = torch.amp.GradScaler("cuda", enabled=use_amp)
+    scaler_d = torch.amp.GradScaler("cuda", enabled=use_amp)
+
+    print(f"Using device: {device} (AMP: {use_amp}, cudnn.benchmark: {torch.backends.cudnn.benchmark})")
     print(f"Target: 48kHz → {output_sr // 1000}kHz")
 
     # Dataset
@@ -175,14 +184,18 @@ def train(args):
         input_sr=48000,
         segment_length=train_cfg["segment_length"],
     )
+    num_workers = min(os.cpu_count() or 4, 8)
     loader = DataLoader(
         dataset,
         batch_size=train_cfg["batch_size"],
         shuffle=True,
-        num_workers=4,
+        num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
+        persistent_workers=True,
+        prefetch_factor=4,
     )
+    print(f"DataLoader: batch_size={train_cfg['batch_size']}, workers={num_workers}")
 
     # Models
     gen_cfg = gan_cfg["generator"]
@@ -201,6 +214,16 @@ def train(args):
     msd = MultiScaleDiscriminator(
         num_scales=gan_cfg["discriminator"]["scales"]
     ).to(device)
+
+    # Compile models for faster execution (PyTorch 2.x)
+    if hasattr(torch, "compile"):
+        try:
+            generator = torch.compile(generator)
+            mpd = torch.compile(mpd)
+            msd = torch.compile(msd)
+            print("Models compiled with torch.compile")
+        except Exception as e:
+            print(f"torch.compile not available: {e}")
 
     # Losses
     stft_loss_fn = MultiResolutionSTFTLoss().to(device)
@@ -269,67 +292,74 @@ def train(args):
 
         pbar = tqdm(loader, desc=f"Epoch {epoch}")
         for lr_audio, hr_audio in pbar:
-            lr_audio = lr_audio.to(device)
-            hr_audio = hr_audio.to(device)
+            lr_audio = lr_audio.to(device, non_blocking=True)
+            hr_audio = hr_audio.to(device, non_blocking=True)
 
             # Generate high-res audio
-            hr_hat = generator(lr_audio)
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                hr_hat = generator(lr_audio)
 
-            # Align lengths
-            min_len = min(hr_hat.shape[-1], hr_audio.shape[-1])
-            hr_hat = hr_hat[..., :min_len]
-            hr_audio = hr_audio[..., :min_len]
+                # Align lengths
+                min_len = min(hr_hat.shape[-1], hr_audio.shape[-1])
+                hr_hat = hr_hat[..., :min_len]
+                hr_audio = hr_audio[..., :min_len]
 
             # ---- Train Discriminator ----
-            optim_d.zero_grad()
+            optim_d.zero_grad(set_to_none=True)
 
-            # MPD
-            mpd_real, mpd_fake, _, _ = mpd(hr_audio, hr_hat.detach())
-            loss_mpd = discriminator_loss(mpd_real, mpd_fake)
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                mpd_real, mpd_fake, _, _ = mpd(hr_audio, hr_hat.detach())
+                loss_mpd = discriminator_loss(mpd_real, mpd_fake)
 
-            # MSD
-            msd_real, msd_fake, _, _ = msd(hr_audio, hr_hat.detach())
-            loss_msd = discriminator_loss(msd_real, msd_fake)
+                msd_real, msd_fake, _, _ = msd(hr_audio, hr_hat.detach())
+                loss_msd = discriminator_loss(msd_real, msd_fake)
 
-            loss_d = loss_mpd + loss_msd
-            loss_d.backward()
+                loss_d = loss_mpd + loss_msd
+
+            scaler_d.scale(loss_d).backward()
+            scaler_d.unscale_(optim_d)
             torch.nn.utils.clip_grad_norm_(
                 list(mpd.parameters()) + list(msd.parameters()), max_norm=10.0
             )
-            optim_d.step()
+            scaler_d.step(optim_d)
+            scaler_d.update()
 
             # ---- Train Generator ----
-            optim_g.zero_grad()
+            optim_g.zero_grad(set_to_none=True)
 
-            # Re-run discriminators on updated generator output
-            mpd_real, mpd_fake, mpd_real_fm, mpd_fake_fm = mpd(hr_audio, hr_hat)
-            msd_real, msd_fake, msd_real_fm, msd_fake_fm = msd(hr_audio, hr_hat)
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                # Re-run discriminators on updated generator output
+                mpd_real, mpd_fake, mpd_real_fm, mpd_fake_fm = mpd(hr_audio, hr_hat)
+                msd_real, msd_fake, msd_real_fm, msd_fake_fm = msd(hr_audio, hr_hat)
 
-            # Adversarial losses
-            loss_g_mpd = generator_loss(mpd_fake)
-            loss_g_msd = generator_loss(msd_fake)
+                # Adversarial losses
+                loss_g_mpd = generator_loss(mpd_fake)
+                loss_g_msd = generator_loss(msd_fake)
 
-            # Feature matching
-            loss_fm_mpd = feature_loss(mpd_real_fm, mpd_fake_fm)
-            loss_fm_msd = feature_loss(msd_real_fm, msd_fake_fm)
+                # Feature matching
+                loss_fm_mpd = feature_loss(mpd_real_fm, mpd_fake_fm)
+                loss_fm_msd = feature_loss(msd_real_fm, msd_fake_fm)
 
-            # Spectral losses
-            loss_stft = stft_loss_fn(hr_hat, hr_audio)
-            loss_mel = mel_loss_fn(hr_hat, hr_audio)
+                # Spectral losses
+                loss_stft = stft_loss_fn(hr_hat, hr_audio)
+                loss_mel = mel_loss_fn(hr_hat, hr_audio)
 
-            # Mastering quality losses
-            loss_mastering, mastering_details = mastering_loss_fn(hr_hat, hr_audio)
+                # Mastering quality losses
+                loss_mastering, mastering_details = mastering_loss_fn(hr_hat, hr_audio)
 
-            loss_g = (
-                loss_g_mpd + loss_g_msd
-                + train_cfg["lambda_fm"] * (loss_fm_mpd + loss_fm_msd)
-                + train_cfg["lambda_stft"] * loss_stft
-                + train_cfg["lambda_mel"] * loss_mel
-                + loss_mastering
-            )
-            loss_g.backward()
+                loss_g = (
+                    loss_g_mpd + loss_g_msd
+                    + train_cfg["lambda_fm"] * (loss_fm_mpd + loss_fm_msd)
+                    + train_cfg["lambda_stft"] * loss_stft
+                    + train_cfg["lambda_mel"] * loss_mel
+                    + loss_mastering
+                )
+
+            scaler_g.scale(loss_g).backward()
+            scaler_g.unscale_(optim_g)
             torch.nn.utils.clip_grad_norm_(generator.parameters(), max_norm=10.0)
-            optim_g.step()
+            scaler_g.step(optim_g)
+            scaler_g.update()
 
             # Logging
             global_step += 1
