@@ -9,14 +9,17 @@ Usage:
 
 import argparse
 import json
+import os
 import warnings
 from pathlib import Path
+
+# Suppress TF/CUDA warnings (Essentia uses TF which expects old CUDA)
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+warnings.filterwarnings("ignore")
 
 import gradio as gr
 import numpy as np
 import soundfile as sf
-
-warnings.filterwarnings("ignore")
 
 
 # ── Localization ──────────────────────────────────────────────────────────────
@@ -366,6 +369,47 @@ def analyze(audio_file, ref_file=None):
             html += "</table>"
     except Exception as e:
         html += f'<p style="color: #888;">{t("audiobox_not_available")}: {e}</p>'
+
+    # Music intelligence (genre, mood, instruments, key, BPM)
+    try:
+        from metrics.music_analysis import MusicAnalyzer
+        ma = MusicAnalyzer()
+        music_info = ma.analyze(path)
+
+        if music_info:
+            html += _section("section_music_intelligence")
+
+            if "key" in music_info:
+                conf = music_info.get("key_confidence", 0)
+                html += _row("metric_key", f"{music_info['key']} ({conf:.0%})", "desc_key")
+
+            if "bpm" in music_info:
+                html += _row("metric_bpm", str(music_info["bpm"]), "desc_bpm")
+
+            if "clap_genre" in music_info and music_info["clap_genre"]:
+                genre_html = ", ".join(
+                    f'<span class="badge-ok">{g}</span> {p:.0%}' if i == 0 else f'{g} {p:.0%}'
+                    for i, (g, p) in enumerate(music_info["clap_genre"].items())
+                )
+                html += _row("metric_genre", genre_html, "desc_genre")
+
+            if "clap_mood" in music_info and music_info["clap_mood"]:
+                mood_html = ", ".join(
+                    f'<span class="badge-ok">{m}</span> {p:.0%}' if i == 0 else f'{m} {p:.0%}'
+                    for i, (m, p) in enumerate(music_info["clap_mood"].items())
+                )
+                html += _row("metric_mood", mood_html, "desc_mood")
+
+            if "mert_instruments" in music_info and music_info["mert_instruments"]:
+                inst_html = ", ".join(
+                    f'<span class="badge-good">{inst}</span> {prob:.0%}'
+                    for inst, prob in music_info["mert_instruments"].items()
+                )
+                html += _row("metric_instruments", inst_html, "desc_instruments")
+
+            html += "</table>"
+    except Exception as e:
+        html += f'<p class="muted">Music analysis: {e}</p>'
 
     # Reference comparison
     if ref_file is not None:

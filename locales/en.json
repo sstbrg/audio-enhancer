@@ -99,6 +99,18 @@
   "desc_encodec": "Neural perceptual distance in Meta's learned audio space. Captures timbre + texture.",
   "desc_mastering_total": "Combined mastering loss (all above weighted and summed).",
 
+  "section_music_intelligence": "Music Intelligence",
+  "metric_genre": "Genre (CLAP)",
+  "metric_mood": "Mood (CLAP)",
+  "metric_instruments": "Instruments",
+  "metric_key": "Key",
+  "metric_bpm": "BPM",
+  "desc_genre": "Zero-shot genre classification via CLAP text-audio similarity. Top 5 genres with confidence.",
+  "desc_mood": "Zero-shot mood/emotion classification via CLAP. Detects the emotional character of the music.",
+  "desc_instruments": "Detected instruments via CLAP zero-shot prompts. Shows instruments with >5% confidence.",
+  "desc_key": "Detected musical key and scale (major/minor) via Essentia's key extraction algorithm.",
+  "desc_bpm": "Estimated tempo in beats per minute. Typical: 60-80 (ballad), 100-130 (pop/rock), 130-160 (dance/EDM).",
+
   "clip_clean": "clean",
   "clip_mild": "mild",
   "clip_clipped": "clipped",
