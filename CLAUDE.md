@@ -109,6 +109,29 @@ All strings from locale files, all styles in CSS. Supports wav/flac/mp3/ogg/webm
 - CLAP + Audiobox: validation only (not differentiable)
 - Gradient clipping: max_norm=10.0, LeakyReLU slope=0.1 (from constants)
 
+## Training phases
+
+### Phase 0: Super-Resolution (current)
+- **Goal:** Upscale 48kHz audio to 96kHz/24-bit using GAN
+- **Input:** High-quality audio downsampled to 48kHz
+- **Target:** Original high-quality audio at 96kHz
+- **Model:** HiFi-GAN generator (11M params, 2x upsample) + MPD/MSD discriminators
+- **Losses:** Adversarial + feature matching + multi-res STFT + mel + mastering (perceptual STFT, dynamics, encodec)
+- **Datasets:** All available (EG-IPT, MUSDB18-HQ, VCTK, MusicNet, GTSinger, MoisesDB, MAESTRO)
+- **What it learns:** Reconstruct missing high-frequency harmonics above 24kHz that were lost in downsampling
+
+### Phase 1: Degradation Restoration (planned)
+- **Goal:** Restore quality of poorly mastered / lossy-compressed audio
+- **Input:** Good audio artificially degraded (bad EQ, compression, codec artifacts, stereo damage)
+- **Target:** Original clean audio
+- **Approach:** Same model architecture, new dataset with degradation pipeline
+- **What it learns:** Undo codec artifacts (MP3/AAC), fix bad EQ, restore dynamics, recover stereo width
+
+### Phase 2: Full Pipeline (planned)
+- **Goal:** End-to-end enhancement: any audio in → studio-quality out
+- **Pipeline:** Apollo (lossy restore) → AudioSR (bandwidth extension) → GAN (upsample + master)
+- **Training:** Fine-tune on real-world audio pairs, optimize for perceptual metrics
+
 ## Next steps
 
 1. Test AMP + torch.compile training (committed, not yet run)
