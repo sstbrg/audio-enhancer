@@ -127,6 +127,12 @@ All strings from locale files, all styles in CSS. Supports wav/flac/mp3/ogg/webm
 - **Approach:** Same model architecture, new dataset with degradation pipeline
 - **What it learns:** Undo codec artifacts (MP3/AAC), fix bad EQ, restore dynamics, recover stereo width
 
+### Inference behavior (enhance.py)
+- **44.1kHz input** → resample to 48kHz → GAN → 96kHz/24-bit output
+- **48kHz input** → GAN → 96kHz/24-bit output
+- **96kHz input** → skip super-resolution (phase 1: apply mastering enhancement only)
+- **>96kHz input** → pass through unchanged
+
 ### Phase 2: Full Pipeline (planned)
 - **Goal:** End-to-end enhancement: any audio in → studio-quality out
 - **Pipeline:** Apollo (lossy restore) → AudioSR (bandwidth extension) → GAN (upsample + master)
