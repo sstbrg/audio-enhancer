@@ -1,41 +1,50 @@
 # Audio Enhancer
 
-GAN-based audio super-resolution model: upscales 48kHz → 192kHz / 32-bit.
+GAN-based audio super-resolution: upscales 48kHz → 96kHz / 24-bit.
 Target quality: hi-fi playback, Dire Straits-level mastering.
 
 ## Project structure
 
 ```
-train.py              # Main training script (GAN: generator + MPD + MSD)
-enhance.py            # Inference / enhancement script
-evaluate.py           # Model evaluation
-prepare_dataset.py    # Resample audio collection to 192kHz for training
+train.py              # Training script (GAN with AMP, torch.compile)
+enhance.py            # Inference: any audio → 96kHz/24-bit wav
+evaluate.py           # CLI model evaluation
+analyze.py            # CLI audio quality analysis
+analyzer_ui.py        # Gradio web UI (Enhance + Analyze tabs, i18n EN/RU)
+prepare_dataset.py    # Resample audio to target SR for training
 models/
-  generator.py        # HiFi-GAN style generator (48kHz → 192kHz)
-  discriminator.py    # Multi-period + multi-scale discriminators
-  losses.py           # Adversarial, feature matching, mel, multi-res STFT losses
-  mastering_losses.py # Perceptual/stereo/dynamics/encodec losses
+  constants.py        # All defaults: sample rates, architecture params, slopes
+  generator.py        # HiFi-GAN generator (48kHz → 96kHz, 2x upsample)
+  discriminator.py    # Multi-period (2,3,5,7,11,17,23) + multi-scale (3)
+  losses.py           # STFT, mel spectrogram, adversarial, feature matching
+  mastering_losses.py # Perceptual STFT, stereo, dynamics, encodec, CLAP, audiobox
 data/
-  dataset.py          # AudioSRDataset: creates (48kHz, 192kHz) pairs on the fly
+  dataset.py          # AudioSRDataset: creates (48kHz, 96kHz) pairs on the fly
 metrics/
-  evaluate.py         # SI-SNR, SDR, reference-based metrics
+  evaluate.py         # SI-SNR, SDR, CDPAM, ViSQOL, Audiobox, PAM, MuQ-Eval, chroma/MFCC/onset
+  music_analysis.py   # Genre, mood, instruments, key, BPM (Essentia, CLAP, MERT)
 configs/
-  phase0.yaml         # Quick validation run (200 epochs, batch 4)
-  default.yaml        # Default training config
+  phase0.yaml         # Phase 0: 96kHz target, batch 8, checkpoint every epoch
+  default.yaml        # Default config
+locales/
+  en.json             # English UI strings
+  ru.json             # Russian UI strings
 infra/
+  datasets.py         # Dataset manager: download/upload/pull/status dashboard
+  datasets.sh         # Shell version (deprecated, use .py)
   setup-vastai.sh     # One-command Vast.ai instance setup
   deploy.sh           # GCP deployment helper (kept for future use)
   main.tf             # Terraform config (GCP, kept for future use)
+third_party/          # (gitignored) PAM, MuQ-Eval clones
 ```
 
 ## Training
 
-Training runs on Vast.ai (RTX 3090, spot). Datasets stored on Google Drive for reuse.
+Training runs on Vast.ai (RTX 3090 spot, ~$0.13-0.22/hr).
 
 ```bash
 # On Vast.ai instance:
-cd /workspace/audio-enhancer
-source .venv/bin/activate
+cd /workspace/audio-enhancer && source .venv/bin/activate
 python train.py \
   --data_dir datasets/phase0_combined \
   --config configs/phase0.yaml \
@@ -43,33 +52,67 @@ python train.py \
   --max-hours 5
 ```
 
-Checkpoints save every 10 epochs. TensorBoard logs go to `checkpoints/*/logs/`.
+Optimizations: AMP (mixed precision), torch.compile, cudnn.benchmark, persistent DataLoader workers.
+Checkpoints save every epoch. TensorBoard via `ssh -N -L 6006:localhost:6006`.
+Resume: `--resume checkpoints/phase0/latest.pt`
+
+## Current status
+
+- Phase 0 epoch 0 complete, checkpoint saved to Google Drive
+- Checkpoint: `gdrive:audio-enhancer-datasets/checkpoints/checkpoint_0000.pt`
+- Losses at end of epoch 0: d≈4.2, g≈35 (stable, encodec spikes resolved)
+- Training optimizations (AMP, torch.compile) committed but not yet tested in training
+- Vast.ai auto-shutdown after 15min idle (cron checks for train.py process)
 
 ## Datasets
 
-Phase 0 uses EG-IPT (96kHz guitar) + MUSDB18-HQ (44.1kHz mixed music).
-See DATASETS.md for full catalog and download URLs.
+Stored on Google Drive (`gdrive:audio-enhancer-datasets/`), pulled to Vast.ai instances.
+Manage with: `python infra/datasets.py status|download|upload|pull|watch`
 
-Raw zips stored in Google Drive under `audio-enhancer-datasets/` for reuse across instances.
+On Drive: EG-IPT (22GB), MUSDB18-HQ (22GB), VCTK 96kHz (20GB), MusicNet (11GB)
+Downloading: MAESTRO (120GB), GTSinger (30GB) — may need re-download on next instance
+Manual: MoisesDB (requested at developer.moises.ai), MedleyDB (requested at medleydb.weebly.com)
+
+rclone config uses custom OAuth client ID (GCP project stoked-mapper-258810).
+
+## Analyzer GUI
+
+```bash
+python analyzer_ui.py           # English, http://localhost:7860
+python analyzer_ui.py --lang ru  # Russian
+```
+
+Two tabs: Enhance (apply model) + Analyze (quality metrics).
+All strings from locale files, all styles in CSS. Supports wav/flac/mp3/ogg/webm.
 
 ## Commands
 
-- Always use `.venv` — never install packages globally
-- Python 3.11+, PyTorch 2.x, CUDA 12.8
-- `source .venv/bin/activate` before any pip/python command
+- ALWAYS use `.venv` — never install packages globally or with --user
+- ALWAYS work on `develop` branch, not `main`
+- Python 3.12, PyTorch 2.11, CUDA 12.8/13.0
+- No magic numbers — all constants in models/constants.py or configs/
 
 ## Infrastructure
 
-- **Compute**: Vast.ai GPU rental (spot RTX 3090, ~$0.13-0.17/hr)
-- **Code**: GitHub public repo (sstbrg/audio-enhancer, branch: main)
-- **Data**: Google Drive (rclone remote "gdrive:")
-- **GCP**: project stoked-mapper-258810 exists but GPU quota denied; Terraform configs kept in infra/ for later
-- **Monitoring**: TensorBoard via SSH tunnel (`ssh -N -L 6006:localhost:6006`)
+- **Compute**: Vast.ai (RTX 3090 spot). SSH: `ssh -i ~/.ssh/id_ed25519 -p PORT root@sshN.vast.ai`
+- **Code**: GitHub public repo sstbrg/audio-enhancer, branch: develop
+- **Data**: Google Drive via rclone (remote name: `gdrive:`)
+- **GCP**: project stoked-mapper-258810, GPU quota denied (can retry after 48h)
+- **Monitoring**: TensorBoard via SSH tunnel, `infra/datasets.py watch` for data
 
-## Key architectural decisions
+## Architecture
 
-- Generator: HiFi-GAN style with 2x2 upsample rates (4x total: 48k→192k)
-- Discriminators: multi-period (periods 2,3,5,7,11) + multi-scale (3 scales)
-- Losses: adversarial + feature matching + multi-res STFT + mel + mastering (perceptual STFT, stereo, dynamics, encodec)
-- Gradient clipping: max_norm=10.0 on both generator and discriminators
-- Spot instance training: checkpoints every 10 epochs to survive preemption
+- Generator: HiFi-GAN, 11M params, single 2x upsample (48k→96k), skip connection
+- Discriminators: MPD (periods 2,3,5,7,11,17,23) + MSD (3 scales, spectral norm on first)
+- Training losses: adversarial + feature matching + multi-res STFT + mel + mastering
+- Mastering losses: perceptual STFT (auraloss), stereo image, dynamics (K-weighted), encodec embedding
+- CLAP + Audiobox: validation only (not differentiable)
+- Gradient clipping: max_norm=10.0, LeakyReLU slope=0.1 (from constants)
+
+## Next steps
+
+1. Test AMP + torch.compile training (committed, not yet run)
+2. Evaluate epoch 0 checkpoint quality with analyzer
+3. Continue training (more epochs, possibly larger batch with AMP)
+4. Add 44.1kHz/16-bit input degradation to dataset (simulate CD quality input)
+5. Phase 1: degradation pipeline (codec artifacts, bad EQ, compression)

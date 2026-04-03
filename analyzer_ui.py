@@ -552,29 +552,24 @@ def enhance(audio_file, checkpoint_file, skip_apollo, skip_audiosr):
 
 with gr.Blocks(
     title="Audio Enhancer & Analyzer",
-    theme=gr.themes.Default(
-        primary_hue="cyan",
-        neutral_hue="slate",
-    ),
+    theme=gr.themes.Soft(primary_hue="cyan"),
     css="""
-    .gradio-container { background: #1a1a2e !important; }
-    .gr-button-primary { background: #00d4ff !important; }
     .report { font-family: 'Segoe UI', sans-serif; padding: 10px; }
     .report h3 { margin-bottom: 5px; }
-    .report h3.section { color: #00d4ff; }
-    .report h3.ref { color: #ff8800; }
-    .report h3.loss { color: #ff4488; }
-    .report h3.done { color: #00ff88; }
+    .report h3.section { color: #0088cc; }
+    .report h3.ref { color: #cc6600; }
+    .report h3.loss { color: #cc4488; }
+    .report h3.done { color: #00aa66; }
     .report table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
-    .report td.label { color: #aaa; padding: 4px 8px; }
-    .report td.value { color: #fff; padding: 4px 8px; }
-    .report td.desc { color: #666; padding: 0 8px 6px; font-size: 0.85em; }
-    .report .badge-good { color: #00ff88; font-weight: bold; }
-    .report .badge-ok { color: #ffaa00; font-weight: bold; }
-    .report .badge-bad { color: #ff4444; font-weight: bold; }
-    .report .error { color: #ff4444; }
-    .report .muted { color: #888; }
-    .report .tip { color: #888; margin-top: 10px; }
+    .report td.label { color: #666; padding: 4px 8px; }
+    .report td.value { padding: 4px 8px; }
+    .report td.desc { color: #999; padding: 0 8px 6px; font-size: 0.85em; }
+    .report .badge-good { color: #00aa66; font-weight: bold; }
+    .report .badge-ok { color: #cc8800; font-weight: bold; }
+    .report .badge-bad { color: #cc3333; font-weight: bold; }
+    .report .error { color: #cc3333; }
+    .report .muted { color: #999; }
+    .report .tip { color: #999; margin-top: 10px; }
     """,
 ) as app:
     gr.Markdown(f"# 🎵 {t('app_title')}")
