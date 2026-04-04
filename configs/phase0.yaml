@@ -44,6 +44,7 @@ gan:
     lambda_fm: 2.0
     lambda_mel: 45.0
     lambda_stft: 45.0
+    grad_clip_norm: 5.0         # Max gradient norm for clipping (both G and D)
     checkpoint_interval: 1
     log_interval: 50
 
@@ -64,3 +65,12 @@ gan:
       lambda_encodec: 0.01      # Raw encodec loss is very large; keep lambda low
       lambda_audiobox_pq: 0.0
       lambda_clap: 0.0
+
+    # CD-quality input degradation (Phase 1 prep).
+    # Applied to the LR input only; HR target stays clean.
+    # Set prob to 0.0 to disable (default — no change to training behaviour).
+    degradation:
+      prob: 0.0           # Fraction of batches that get CD degradation applied [0, 1]
+      cd_sr: 44100        # Intermediate CD sample rate
+      bit_depth: 16       # Quantisation bit depth
+      dither_amplitude: 0.5  # TPDF dither in LSBs (0.5 = standard)

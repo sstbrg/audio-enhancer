@@ -27,8 +27,11 @@ MSD_SCALES = 3
 
 # Training defaults
 LEAKY_RELU_SLOPE = 0.1
-GRAD_CLIP_MAX_NORM = 10.0        # Gradient clipping max norm
+GRAD_CLIP_MAX_NORM = 5.0         # Gradient clipping max norm
 LR_SCHEDULER_GAMMA = 0.999       # ExponentialLR decay factor
+LOSS_SPIKE_THRESHOLD = 10.0      # Skip G step if g_loss > this * running mean
+LOSS_EMA_DECAY = 0.99            # Exponential moving average decay for loss tracking
+AMP_SCALER_GROWTH_INTERVAL = 4000  # Steps between AMP scaler growth attempts
 
 # ── Upscale potential analysis ───────────────────────────────────────────────
 # FFT parameters

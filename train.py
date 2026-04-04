@@ -35,7 +35,14 @@ from models import (
     MelSpectrogramLoss,
     MultiResolutionSTFTLoss,
 )
-from models.constants import INPUT_SAMPLE_RATE, GRAD_CLIP_MAX_NORM, LR_SCHEDULER_GAMMA
+from models.constants import (
+    INPUT_SAMPLE_RATE,
+    GRAD_CLIP_MAX_NORM,
+    LR_SCHEDULER_GAMMA,
+    LOSS_SPIKE_THRESHOLD,
+    LOSS_EMA_DECAY,
+    AMP_SCALER_GROWTH_INTERVAL,
+)
 from models.mastering_losses import MasteringLoss
 
 
@@ -211,8 +218,8 @@ def train(args):
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True  # Auto-tune convolution algorithms
     use_amp = device.type == "cuda"
-    scaler_g = torch.amp.GradScaler("cuda", enabled=use_amp)
-    scaler_d = torch.amp.GradScaler("cuda", enabled=use_amp)
+    scaler_g = torch.amp.GradScaler("cuda", enabled=use_amp, growth_interval=AMP_SCALER_GROWTH_INTERVAL)
+    scaler_d = torch.amp.GradScaler("cuda", enabled=use_amp, growth_interval=AMP_SCALER_GROWTH_INTERVAL)
 
     print(f"Using device: {device} (AMP: {use_amp}, cudnn.benchmark: {torch.backends.cudnn.benchmark})")
     print(f"Target: 48kHz → {output_sr // 1000}kHz")
@@ -321,7 +328,16 @@ def train(args):
     start_epoch = 0
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
-        generator.load_state_dict(ckpt["generator"], strict=False)
+        try:
+            generator.load_state_dict(ckpt["generator"])
+        except RuntimeError as e:
+            raise RuntimeError(
+                f"Generator checkpoint does not match current architecture. "
+                f"This usually means the model config (channels, upsample_rates, "
+                f"resblock sizes) has changed since the checkpoint was saved. "
+                f"Either use a matching config or start training from scratch.\n"
+                f"Detail: {e}"
+            ) from e
         mpd.load_state_dict(ckpt["mpd"])
         msd.load_state_dict(ckpt["msd"])
         # Restore optimizer state — skip if param groups changed (e.g. layers removed)
@@ -367,6 +383,12 @@ def train(args):
     train_start = time.time()
     max_seconds = args.max_hours * 3600 if args.max_hours else float("inf")
     grad_clip = train_cfg.get("grad_clip_norm", GRAD_CLIP_MAX_NORM)
+
+    # Loss spike detection: track EMA of generator loss
+    spike_threshold = train_cfg.get("loss_spike_threshold", LOSS_SPIKE_THRESHOLD)
+    spike_ema_decay = train_cfg.get("loss_ema_decay", LOSS_EMA_DECAY)
+    g_loss_ema = None  # initialized from first batch
+    spikes_skipped = 0
 
     for epoch in range(start_epoch, train_cfg["epochs"]):
         # Time limit check
@@ -447,23 +469,48 @@ def train(args):
             scaler_g.scale(loss_g).backward()
             scaler_g.unscale_(optim_g)
             grad_norm_g = torch.nn.utils.clip_grad_norm_(generator.parameters(), max_norm=grad_clip)
-            scaler_g.step(optim_g)
+
+            # Loss spike detection: skip optimizer step if g_loss spikes
+            g_loss_val = loss_g.item()
+            g_step_skipped = False
+            if g_loss_ema is None:
+                g_loss_ema = g_loss_val  # initialize from first batch
+            elif g_loss_val > spike_threshold * g_loss_ema:
+                # Spike detected — skip this optimizer step
+                optim_g.zero_grad(set_to_none=True)
+                spikes_skipped += 1
+                g_step_skipped = True
+                print(
+                    f"\n  [WARNING] G loss spike: {g_loss_val:.1f} > "
+                    f"{spike_threshold}x EMA ({g_loss_ema:.1f}). "
+                    f"Skipping G step. (total skipped: {spikes_skipped})"
+                )
+                writer.add_scalar("train/g_step_skipped", 1, global_step + 1)
+
+            if not g_step_skipped:
+                scaler_g.step(optim_g)
             scaler_g.update()
+
+            # Update EMA (only on non-spike steps to avoid poisoning the tracker)
+            if not g_step_skipped:
+                g_loss_ema = spike_ema_decay * g_loss_ema + (1 - spike_ema_decay) * g_loss_val
 
             # Logging
             global_step += 1
             if global_step % train_cfg["log_interval"] == 0:
                 log_dict = {
-                    "loss/generator": loss_g.item(),
+                    "loss/generator": g_loss_val,
                     "loss/discriminator": loss_d.item(),
                     "loss/stft": loss_stft.item(),
                     "loss/mel": loss_mel.item(),
                     "loss/fm": (loss_fm_mpd + loss_fm_msd).item(),
                     "loss/mastering_total": mastering_details.get("mastering_total", 0),
+                    "loss/g_ema": g_loss_ema,
                     "grad_norm/generator": grad_norm_g.item(),
                     "grad_norm/discriminator": grad_norm_d.item(),
                     "amp/scale_g": scaler_g.get_scale(),
                     "amp/scale_d": scaler_d.get_scale(),
+                    "train/spikes_skipped_total": spikes_skipped,
                 }
                 for k, v in mastering_details.items():
                     if k != "mastering_total":
@@ -474,7 +521,7 @@ def train(args):
                     writer.add_scalar(k, v, global_step)
 
             pbar.set_postfix(
-                g=f"{loss_g.item():.3f}",
+                g=f"{g_loss_val:.3f}",
                 d=f"{loss_d.item():.3f}",
             )
 
