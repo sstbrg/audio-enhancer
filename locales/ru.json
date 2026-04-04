@@ -172,6 +172,7 @@
   "not_available": "недоступно",
   "not_installed": "не установлено",
   "audiobox_not_available": "Audiobox недоступен",
+  "music_analysis_error": "Музыкальный анализ недоступен",
 
   "dashboard_title": "Audio Enhancer — Монитор",
   "dashboard_desc": "Панель мониторинга обучения и статуса датасетов (только чтение).",
