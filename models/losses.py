@@ -58,24 +58,26 @@ class STFTLoss(nn.Module):
             y = y.squeeze(1)
             y_hat = y_hat.squeeze(1)
 
-        # torch.stft does not support float16 — cast to float32 before calling.
-        y = y.float()
-        y_hat = y_hat.float()
+        # torch.stft does not support float16 and magnitudes can overflow fp16 max.
+        # Disable autocast and run entirely in float32.
+        with torch.autocast("cuda", enabled=False):
+            y = y.float()
+            y_hat = y_hat.float()
 
-        y_stft = torch.stft(y, self.fft_size, self.hop_size, self.win_size,
-                            self.window, return_complex=True)
-        y_hat_stft = torch.stft(y_hat, self.fft_size, self.hop_size, self.win_size,
+            y_stft = torch.stft(y, self.fft_size, self.hop_size, self.win_size,
                                 self.window, return_complex=True)
+            y_hat_stft = torch.stft(y_hat, self.fft_size, self.hop_size, self.win_size,
+                                    self.window, return_complex=True)
 
-        y_mag = torch.abs(y_stft)
-        y_hat_mag = torch.abs(y_hat_stft)
+            y_mag = torch.abs(y_stft)
+            y_hat_mag = torch.abs(y_hat_stft)
 
-        # Spectral convergence (per batch item, then averaged)
-        sc_loss = torch.norm(y_mag - y_hat_mag, p="fro", dim=(1, 2)) / (torch.norm(y_mag, p="fro", dim=(1, 2)) + 1e-8)
-        sc_loss = sc_loss.mean()
+            # Spectral convergence (per batch item, then averaged)
+            sc_loss = torch.norm(y_mag - y_hat_mag, p="fro", dim=(1, 2)) / (torch.norm(y_mag, p="fro", dim=(1, 2)) + 1e-8)
+            sc_loss = sc_loss.mean()
 
-        # Log magnitude loss
-        log_loss = F.l1_loss(torch.log(y_mag + 1e-8), torch.log(y_hat_mag + 1e-8))
+            # Log magnitude loss
+            log_loss = F.l1_loss(torch.log(y_mag + 1e-8), torch.log(y_hat_mag + 1e-8))
 
         return sc_loss + log_loss
 
@@ -128,10 +130,11 @@ class MelSpectrogramLoss(nn.Module):
             y = y.squeeze(1)
             y_hat = y_hat.squeeze(1)
 
-        # MelSpectrogram may produce dtype mismatches under AMP autocast —
-        # cast to float32 before calling the transform.
-        y_mel = self.mel_transform(y.float())
-        y_hat_mel = self.mel_transform(y_hat.float())
+        # MelSpectrogram values can exceed float16 max (65504), causing inf/NaN.
+        # Disable autocast and run entirely in float32.
+        with torch.autocast("cuda", enabled=False):
+            y_mel = self.mel_transform(y.float())
+            y_hat_mel = self.mel_transform(y_hat.float())
 
         return F.l1_loss(torch.log(y_hat_mel + 1e-8), torch.log(y_mel + 1e-8))
 
