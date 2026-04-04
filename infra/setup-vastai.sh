@@ -76,9 +76,22 @@ ok "System packages installed"
 log "[2/6] Setting up Python environment..."
 cd "$PROJECT_DIR"
 
+# Detect SSL cert path — pytorch docker images use /opt/conda, standard Ubuntu uses /etc/ssl
+SSL_CERT=""
+for cert_path in /opt/conda/ssl/cert.pem /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt; do
+    if [ -f "$cert_path" ]; then
+        SSL_CERT="$cert_path"
+        break
+    fi
+done
+if [ -n "$SSL_CERT" ]; then
+    export SSL_CERT_FILE="$SSL_CERT"
+    log "SSL cert: $SSL_CERT"
+fi
+
 # Create venv only if it doesn't exist or is broken
 if [ -f "$VENV/bin/python" ]; then
-    if "$VENV/bin/python" -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)" 2>/dev/null; then
+    if "$VENV/bin/python" -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" 2>/dev/null; then
         ok "Existing venv looks good, skipping creation"
     else
         log "Existing venv has wrong Python version, recreating..."
@@ -87,19 +100,25 @@ if [ -f "$VENV/bin/python" ]; then
 fi
 
 if [ ! -f "$VENV/bin/python" ]; then
-    python3 -m venv "$VENV"
-    log "Created new venv at $VENV"
+    # Use --system-site-packages if PyTorch is already installed system-wide (e.g. pytorch docker image)
+    if python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+        python3 -m venv "$VENV" --system-site-packages
+        log "Created venv with system-site-packages (reusing pre-installed PyTorch)"
+    else
+        python3 -m venv "$VENV"
+        log "Created new venv at $VENV"
+    fi
 fi
 
 source "$VENV/bin/activate"
 pip install --upgrade pip -q
 
-# Install PyTorch (CUDA 12.8)
+# Install PyTorch (CUDA 12.8) only if not already available
 if ! python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
     log "Installing PyTorch with CUDA 12.8..."
     pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128 -q 2>&1 | tail -3
 else
-    ok "PyTorch already installed with CUDA"
+    ok "PyTorch already installed with CUDA ($(python -c 'import torch; print(torch.__version__)'))"
 fi
 
 # Install project requirements
@@ -107,7 +126,7 @@ if [ -f "$PROJECT_DIR/requirements.txt" ]; then
     pip install -r "$PROJECT_DIR/requirements.txt" -q 2>&1 | tail -3
 fi
 # Core deps that may not be in requirements.txt
-pip install numpy soundfile librosa scipy tqdm pyyaml tensorboard -q 2>&1 | tail -1
+pip install numpy soundfile librosa scipy tqdm pyyaml tensorboard auraloss encodec -q 2>&1 | tail -1
 
 # Validate venv
 python -c "
