@@ -194,81 +194,75 @@ def analyze_spectrum(path: str) -> dict:
     }
 
 
-def analyze_upscale_potential(path: str) -> dict:
-    """Assess how much this file could benefit from enhancement."""
+def _analyze_upscale_potential_stub(path: str) -> dict:
+    """Fallback stub when metrics.upscale_potential is not yet available."""
     from models.constants import OUTPUT_SAMPLE_RATE
 
     data, sr = _load_audio(path)
     mono = data.mean(axis=1) if data.shape[1] > 1 else data[:, 0]
     target_sr = OUTPUT_SAMPLE_RATE
 
-    result = {}
-
-    # Sample rate headroom
-    result["current_sr"] = sr
-    result["target_sr"] = target_sr
-    result["sr_headroom"] = max(0, target_sr - sr)
-
-    # Spectral ceiling: find where energy drops below noise floor
     import librosa
     S = np.abs(librosa.stft(mono, n_fft=4096))
     freqs = librosa.fft_frequencies(sr=sr, n_fft=4096)
     mean_magnitude = S.mean(axis=1)
 
-    # Find the frequency where magnitude drops to 1% of max (effective bandwidth)
     threshold = mean_magnitude.max() * 0.01
     above = np.where(mean_magnitude > threshold)[0]
     spectral_ceiling = freqs[above[-1]] if len(above) > 0 else 0
-    result["spectral_ceiling_hz"] = round(float(spectral_ceiling))
-    result["nyquist_hz"] = sr / 2
+    nyquist = sr / 2
+    nyquist_ratio = spectral_ceiling / nyquist if nyquist > 0 else 0
+    rolloff_hz = round(float(spectral_ceiling))
+    gap_hz = max(0.0, float(nyquist - spectral_ceiling))
+    gap_ratio = round(float(gap_hz / nyquist if nyquist > 0 else 0), 3)
 
-    # Codec artifact detection: sharp spectral cutoff
-    # If spectral ceiling is well below Nyquist, likely lossy-encoded
-    nyquist_ratio = spectral_ceiling / (sr / 2) if sr > 0 else 0
-    result["nyquist_usage"] = round(float(nyquist_ratio), 3)
-
-    # Check for sharp cutoff (codec signature)
-    if len(above) > 10:
-        top_freqs = freqs[above[-10:]]
-        top_mags = mean_magnitude[above[-10:]]
-        # Sharp drop = codec (gradual drop = natural)
-        mag_gradient = np.diff(top_mags) / (np.diff(top_freqs) + 1e-8)
-        sharpness = float(np.abs(mag_gradient).mean())
-        result["cutoff_sharpness"] = round(sharpness, 6)
-    else:
-        result["cutoff_sharpness"] = 0.0
-
-    # Bit depth assessment
     try:
-        import soundfile as sf
         info = sf.info(path)
         bit_map = {"PCM_16": 16, "PCM_24": 24, "PCM_32": 32, "FLOAT": 32}
-        result["bit_depth"] = bit_map.get(info.subtype, 16)
+        declared_bit_depth = bit_map.get(info.subtype, 16)
     except Exception:
-        result["bit_depth"] = 16
+        declared_bit_depth = 16
 
-    # Enhancement verdict
-    score = 0
-    if sr < target_sr:
-        score += 3  # Can upsample
-    if nyquist_ratio < 0.85:
-        score += 2  # Spectral content well below Nyquist (lossy/downsampled)
-    if result["bit_depth"] < 24:
-        score += 1  # Can improve dynamic range
-    if sr <= 44100:
-        score += 1  # CD quality or below
+    noise_floor_db = float(20 * np.log10(np.percentile(np.abs(mono) + 1e-10, 1) + 1e-10))
+    effective_bit_depth = max(8, min(24, round((noise_floor_db + 6) / -6)))
+    headroom_db = round(declared_bit_depth * 6.02, 1)
 
-    if score >= 5:
-        result["verdict"] = "high"
-    elif score >= 3:
-        result["verdict"] = "medium"
-    elif score >= 1:
-        result["verdict"] = "low"
-    else:
-        result["verdict"] = "none"
+    # Simple score: 0-100 based on available improvement potential
+    sr_score = min(40, max(0, (target_sr - sr) / target_sr * 40))
+    bw_score = (1.0 - nyquist_ratio) * 30
+    bit_score = max(0, (24 - declared_bit_depth) / 8 * 20)
+    raw_score = sr_score + bw_score + bit_score
+    upscale_potential_score = round(min(100.0, max(0.0, raw_score)), 1)
 
-    result["score"] = score
-    return result
+    return {
+        "effective_sr": round(float(spectral_ceiling * 2)),
+        "nominal_sr": sr,
+        "bandwidth_utilization": round(float(nyquist_ratio), 3),
+        "codec_artifacts_detected": nyquist_ratio < 0.85,
+        "likely_codec": "unknown",
+        "confidence": 0.0,
+        "effective_bit_depth": effective_bit_depth,
+        "declared_bit_depth": declared_bit_depth,
+        "headroom_db": headroom_db,
+        "rolloff_hz": rolloff_hz,
+        "nyquist_hz": round(float(nyquist)),
+        "gap_hz": round(gap_hz),
+        "gap_ratio": gap_ratio,
+        "upscale_potential_score": upscale_potential_score,
+    }
+
+
+def analyze_upscale_potential(path: str) -> dict:
+    """Assess how much this file could benefit from enhancement.
+
+    Tries to import from metrics.upscale_potential (Anton's module).
+    Falls back to the built-in stub when the module is not available.
+    """
+    try:
+        from metrics.upscale_potential import analyze_upscale_potential as _real
+        return _real(path)
+    except ImportError:
+        return _analyze_upscale_potential_stub(path)
 
 
 def generate_waveform_plot(path: str):
@@ -403,24 +397,127 @@ def analyze(audio_file, ref_file, lang="English"):
     # Upscale potential
     try:
         up = analyze_upscale_potential(path)
-        verdict_colors = {"high": "badge-bad", "medium": "badge-ok", "low": "badge-good", "none": "badge-good"}
+        score = float(up.get("upscale_potential_score", 0))
+
+        # Score color: red (high potential) → orange → green (already optimal)
+        if score >= 60:
+            score_class = "badge-bad"
+        elif score >= 30:
+            score_class = "badge-ok"
+        else:
+            score_class = "badge-good"
+
+        # Summary text keyed by score range
+        if score >= 60:
+            summary_key = "summary_high"
+        elif score >= 30:
+            summary_key = "summary_medium"
+        elif score >= 10:
+            summary_key = "summary_low"
+        else:
+            summary_key = "summary_none"
+
         html += _section("section_upscale_potential")
-        html += _row("metric_sr_headroom",
-                      f"{up['current_sr']:,} Hz → {up['target_sr']:,} Hz (+{up['sr_headroom']:,} Hz)",
-                      "desc_sr_headroom")
-        html += _row("metric_spectral_ceiling",
-                      f"{up['spectral_ceiling_hz']:,} Hz / {up['nyquist_hz']:,.0f} Hz ({up['nyquist_usage']:.0%} used)",
-                      "desc_spectral_ceiling")
-        html += _row("metric_bit_depth_headroom",
-                      f"{up['bit_depth']}-bit → 24-bit",
-                      "desc_bit_depth_headroom")
-        verdict_class = verdict_colors.get(up["verdict"], "")
-        html += f'<tr><td class="label">{t("metric_enhancement_verdict")}</td>'
-        html += f'<td class="value"><span class="{verdict_class}">{t("verdict_" + up["verdict"])}</span></td></tr>'
-        html += f'<tr><td colspan="2" class="desc">{t("desc_enhancement_verdict")}</td></tr>'
+
+        # Prominent score display
+        html += (
+            f'<tr><td class="label"><b>{t("metric_upscale_score")}</b></td>'
+            f'<td class="value"><span class="{score_class}" style="font-size:1.4em;">'
+            f'{score:.0f} / 100</span></td></tr>'
+            f'<tr><td colspan="2" class="desc">{t("desc_upscale_score")}</td></tr>'
+        )
+
+        # Summary sentence
+        html += (
+            f'<tr><td colspan="2" class="desc" style="font-style:italic; color:#666;">'
+            f'{t(summary_key)}</td></tr>'
+        )
+
+        # Sample rate
+        nominal_sr = up.get("nominal_sr", 0)
+        effective_sr = up.get("effective_sr", 0)
+        html += _row(
+            "metric_effective_sr",
+            f"{effective_sr:,} Hz",
+            "desc_effective_sr",
+        )
+        html += _row(
+            "metric_nominal_sr",
+            f"{nominal_sr:,} Hz",
+        )
+
+        # Bandwidth utilization
+        bw = up.get("bandwidth_utilization", 0)
+        bw_class = "badge-good" if bw >= 0.85 else ("badge-ok" if bw >= 0.6 else "badge-bad")
+        html += (
+            f'<tr><td class="label">{t("metric_bandwidth_utilization")}</td>'
+            f'<td class="value"><span class="{bw_class}">{bw:.0%}</span></td></tr>'
+            f'<tr><td colspan="2" class="desc">{t("desc_bandwidth_utilization")}</td></tr>'
+        )
+
+        # Codec artifacts
+        artifacts = up.get("codec_artifacts_detected", False)
+        confidence = up.get("confidence", 0.0)
+        likely_codec = up.get("likely_codec", "unknown")
+        if artifacts:
+            codec_text = t("codec_detected").format(confidence=confidence)
+            codec_class = "badge-bad"
+        else:
+            codec_text = t("codec_not_detected")
+            codec_class = "badge-good"
+        html += (
+            f'<tr><td class="label">{t("metric_codec_artifacts")}</td>'
+            f'<td class="value"><span class="{codec_class}">{codec_text}</span></td></tr>'
+            f'<tr><td colspan="2" class="desc">{t("desc_codec_artifacts")}</td></tr>'
+        )
+        if artifacts and likely_codec and likely_codec != "unknown":
+            html += (
+                f'<tr><td class="label">{t("metric_likely_codec")}</td>'
+                f'<td class="value">{likely_codec}</td></tr>'
+                f'<tr><td class="label">{t("metric_codec_confidence")}</td>'
+                f'<td class="value">{confidence:.0%}</td></tr>'
+            )
+
+        # Bit depth
+        effective_bd = up.get("effective_bit_depth", 0)
+        declared_bd = up.get("declared_bit_depth", 0)
+        headroom_db = up.get("headroom_db", 0)
+        html += _row(
+            "metric_effective_bit_depth",
+            f"{effective_bd}-bit",
+            "desc_effective_bit_depth",
+        )
+        html += _row(
+            "metric_declared_bit_depth",
+            f"{declared_bd}-bit",
+        )
+        html += _row(
+            "metric_headroom_db",
+            f"{headroom_db:.1f} dB",
+            "desc_headroom_db",
+        )
+
+        # Spectral gap
+        rolloff_hz = up.get("rolloff_hz", 0)
+        nyquist_hz = up.get("nyquist_hz", 0)
+        gap_hz = up.get("gap_hz", 0)
+        gap_ratio = up.get("gap_ratio", 0)
+        gap_class = "badge-bad" if gap_ratio >= 0.4 else ("badge-ok" if gap_ratio >= 0.15 else "badge-good")
+        html += _row("metric_rolloff_hz", f"{rolloff_hz:,} Hz")
+        html += _row("metric_nyquist_hz", f"{nyquist_hz:,} Hz")
+        html += (
+            f'<tr><td class="label">{t("metric_gap_hz")}</td>'
+            f'<td class="value">{gap_hz:,} Hz</td></tr>'
+        )
+        html += (
+            f'<tr><td class="label">{t("metric_gap_ratio")}</td>'
+            f'<td class="value"><span class="{gap_class}">{gap_ratio:.0%}</span></td></tr>'
+            f'<tr><td colspan="2" class="desc">{t("desc_gap_ratio")}</td></tr>'
+        )
+
         html += "</table>"
     except Exception as e:
-        html += f'<p class="muted">Upscale analysis: {e}</p>'
+        html += f'<p class="muted">{t("upscale_not_available")}: {e}</p>'
 
     # Levels & dynamics
     html += _section("section_levels")

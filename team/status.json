@@ -1,0 +1,171 @@
+{
+  "last_updated": "2026-04-04T11:13:16Z",
+  "agents": {
+    "jason": {
+      "name": "Jason",
+      "role": "system-engineer",
+      "status": "supervising",
+      "current_task": "Overseeing phase 0 training and team coordination",
+      "assigned_at": "2026-04-04T07:00:00Z",
+      "completed_tasks": [
+        {
+          "task": "Triaged team for phase 0 review",
+          "completed_at": "2026-04-04T07:15:00Z"
+        },
+        {
+          "task": "Dispatched idle agents",
+          "completed_at": "2026-04-04T07:30:00Z"
+        }
+      ],
+      "blocked_by": null,
+      "notes": ""
+    },
+    "lara": {
+      "name": "Lara",
+      "role": "ai-team-lead",
+      "status": "done",
+      "current_task": "Gave strategic GO for phase 0",
+      "assigned_at": null,
+      "completed_tasks": [
+        {
+          "task": "Gave strategic GO for phase 0",
+          "completed_at": "2026-04-04T07:20:00Z"
+        }
+      ],
+      "blocked_by": null,
+      "notes": ""
+    },
+    "adam": {
+      "name": "Adam",
+      "role": "ai-engineer-training",
+      "status": "done",
+      "current_task": "Fixed training blockers and AMP NaN",
+      "assigned_at": null,
+      "completed_tasks": [
+        {
+          "task": "Fixed training blockers and AMP NaN",
+          "completed_at": "2026-04-04T08:00:00Z"
+        }
+      ],
+      "blocked_by": null,
+      "notes": ""
+    },
+    "kyle": {
+      "name": "Kyle",
+      "role": "ai-engineer-gans",
+      "status": "done",
+      "current_task": "Fixed architecture issues",
+      "assigned_at": null,
+      "completed_tasks": [
+        {
+          "task": "Fixed architecture issues",
+          "completed_at": "2026-04-04T08:00:00Z"
+        }
+      ],
+      "blocked_by": null,
+      "notes": "Discriminator d loss too low, may need architecture review"
+    },
+    "cain": {
+      "name": "Cain",
+      "role": "data-engineer",
+      "status": "done",
+      "current_task": "Implemented weighted sampling",
+      "assigned_at": null,
+      "completed_tasks": [
+        {
+          "task": "Implemented weighted sampling",
+          "completed_at": "2026-04-04T08:10:00Z"
+        }
+      ],
+      "blocked_by": null,
+      "notes": ""
+    },
+    "rona": {
+      "name": "Rona",
+      "role": "frontend-server",
+      "status": "done",
+      "current_task": "Built monitor.py",
+      "assigned_at": null,
+      "completed_tasks": [
+        {
+          "task": "Built monitor.py",
+          "completed_at": "2026-04-04T08:15:00Z"
+        }
+      ],
+      "blocked_by": null,
+      "notes": ""
+    },
+    "pierce": {
+      "name": "Pierce",
+      "role": "frontend-analyzer",
+      "status": "working",
+      "current_task": "Adding upscale potential to analyzer UI",
+      "assigned_at": "2026-04-04T08:20:00Z",
+      "completed_tasks": [],
+      "blocked_by": null,
+      "notes": ""
+    },
+    "anton": {
+      "name": "Anton",
+      "role": "backend-analyzer",
+      "status": "working",
+      "current_task": "Implementing upscale potential metrics",
+      "assigned_at": "2026-04-04T08:20:00Z",
+      "completed_tasks": [],
+      "blocked_by": null,
+      "notes": ""
+    },
+    "marina": {
+      "name": "Marina",
+      "role": "devops-engineer",
+      "status": "done",
+      "current_task": "Set up Vast.ai instance and datasets",
+      "assigned_at": null,
+      "completed_tasks": [
+        {
+          "task": "Set up Vast.ai instance and datasets",
+          "completed_at": "2026-04-04T07:45:00Z"
+        }
+      ],
+      "blocked_by": null,
+      "notes": ""
+    },
+    "perla": {
+      "name": "Perla",
+      "role": "docs-manager",
+      "status": "idle",
+      "current_task": null,
+      "assigned_at": null,
+      "completed_tasks": [],
+      "blocked_by": null,
+      "notes": "Docs are up to date"
+    },
+    "florence": {
+      "name": "Florence",
+      "role": "git-expert",
+      "status": "on-call",
+      "current_task": "Will review and commit when ready",
+      "assigned_at": "2026-04-04T07:00:00Z",
+      "completed_tasks": [],
+      "blocked_by": null,
+      "notes": ""
+    },
+    "jack": {
+      "name": "Jack",
+      "role": "qa-expert",
+      "status": "idle",
+      "current_task": null,
+      "assigned_at": null,
+      "completed_tasks": [
+        {
+          "task": "Verified team manager CLI works",
+          "completed_at": "2026-04-04T11:12:59Z"
+        }
+      ],
+      "blocked_by": null,
+      "notes": "Will test when code lands"
+    }
+  },
+  "active_tasks": [],
+  "completed_tasks": []
+}
