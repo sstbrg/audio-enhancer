@@ -32,6 +32,27 @@ import soundfile as sf
 import torch
 import torchaudio.functional as AF
 
+from models.constants import (
+    AUDIOBOX_SAMPLE_RATE,
+    CHROMA_HOP_LENGTH,
+    CHROMA_N_FFT,
+    CONTENT_ANALYSIS_SAMPLE_RATE,
+    HF_ENERGY_CROSSOVER_DIVISOR,
+    HF_ENERGY_FFT_SIZE,
+    HF_ENERGY_HOP_SIZE,
+    INPUT_SAMPLE_RATE,
+    METRIC_EPSILON,
+    METRIC_REFERENCE_SAMPLE_RATE,
+    MFCC_N_COEFFICIENTS,
+    MUQ_MAX_SECONDS,
+    MUQ_SAMPLE_RATE,
+    ONSET_TOLERANCE_MS,
+    OUTPUT_SAMPLE_RATE,
+    PAM_CHUNK_SECONDS,
+    PAM_SAMPLE_RATE,
+    VISQOL_SAMPLE_RATE,
+)
+
 
 @dataclass
 class MetricResult:
@@ -111,9 +132,9 @@ class AudioMetrics:
                 from PAM import PAM
                 self._pam = PAM(use_cuda=(self.device == "cuda"))
 
-            # Load and prepare audio (PAM expects 44100 Hz, 7-second chunks)
-            waveform = _load_audio_tensor(audio_path, 44100)
-            chunk_len = 44100 * 7  # 7 seconds
+            # Load and prepare audio at PAM's expected sample rate
+            waveform = _load_audio_tensor(audio_path, PAM_SAMPLE_RATE)
+            chunk_len = PAM_SAMPLE_RATE * PAM_CHUNK_SECONDS
 
             scores = []
             for start in range(0, len(waveform), chunk_len):
@@ -147,9 +168,9 @@ class AudioMetrics:
                 self._audiobox = initialize_predictor()
 
             # Load audio as tensor to bypass torchcodec (which needs libnppicc)
-            waveform = _load_audio_tensor(audio_path, 16000)
+            waveform = _load_audio_tensor(audio_path, AUDIOBOX_SAMPLE_RATE)
             wav_tensor = waveform.unsqueeze(0)  # (1, samples)
-            results = self._audiobox.forward([{"path": wav_tensor, "sample_rate": 16000}])
+            results = self._audiobox.forward([{"path": wav_tensor, "sample_rate": AUDIOBOX_SAMPLE_RATE}])
             scores = results[0]  # {CE, CU, PC, PQ}
             return MetricResult("Audiobox Aesthetics", scores, higher_is_better=True,
                                 description="Production quality dimensions (0-10)")
@@ -185,9 +206,9 @@ class AudioMetrics:
                     model = model.cuda()
                 self._muq = model
 
-            # MuQ expects 24000 Hz, max 10 seconds
-            waveform = _load_audio_tensor(audio_path, 24000)
-            max_samples = 24000 * 10
+            # MuQ expects specific sample rate and max length
+            waveform = _load_audio_tensor(audio_path, MUQ_SAMPLE_RATE)
+            max_samples = MUQ_SAMPLE_RATE * MUQ_MAX_SECONDS
             if len(waveform) > max_samples:
                 waveform = waveform[:max_samples]
 
@@ -230,7 +251,7 @@ class AudioMetrics:
                         import os
 
                         config = visqol_config_pb2.VisqolConfig()
-                        config.audio.sample_rate = 48000
+                        config.audio.sample_rate = VISQOL_SAMPLE_RATE
                         config.options.use_speech_scoring = False
                         config.options.svr_model_path = os.path.join(
                             os.path.dirname(visqol_lib_py.__file__),
@@ -246,8 +267,8 @@ class AudioMetrics:
             if kind == "pyvisqol":
                 score = api.measure(reference_path, degraded_path)
             elif kind == "official":
-                ref = _load_audio_tensor(reference_path, 48000).numpy()
-                deg = _load_audio_tensor(degraded_path, 48000).numpy()
+                ref = _load_audio_tensor(reference_path, VISQOL_SAMPLE_RATE).numpy()
+                deg = _load_audio_tensor(degraded_path, VISQOL_SAMPLE_RATE).numpy()
                 min_len = min(len(ref), len(deg))
                 result = api.Measure(ref[:min_len], deg[:min_len])
                 score = result.moslqo
@@ -264,9 +285,9 @@ class AudioMetrics:
 
         Higher is better. No external dependencies needed.
         """
-        # Use consistent sample rate
-        ref = _load_audio_tensor(reference_path, 48000)
-        enh = _load_audio_tensor(enhanced_path, 48000)
+        # Use consistent sample rate for comparison
+        ref = _load_audio_tensor(reference_path, METRIC_REFERENCE_SAMPLE_RATE)
+        enh = _load_audio_tensor(enhanced_path, METRIC_REFERENCE_SAMPLE_RATE)
 
         min_len = min(len(ref), len(enh))
         ref = ref[:min_len]
@@ -277,11 +298,11 @@ class AudioMetrics:
         enh = enh - enh.mean()
 
         dot = torch.dot(enh, ref)
-        s_target = dot * ref / (torch.dot(ref, ref) + 1e-8)
+        s_target = dot * ref / (torch.dot(ref, ref) + METRIC_EPSILON)
         e_noise = enh - s_target
 
         si_snr_val = 10 * torch.log10(
-            torch.dot(s_target, s_target) / (torch.dot(e_noise, e_noise) + 1e-8) + 1e-8
+            torch.dot(s_target, s_target) / (torch.dot(e_noise, e_noise) + METRIC_EPSILON) + METRIC_EPSILON
         )
 
         return MetricResult("SI-SNR", float(si_snr_val), higher_is_better=True,
@@ -292,8 +313,8 @@ class AudioMetrics:
 
         Higher is better. No external dependencies needed.
         """
-        ref = _load_audio_tensor(reference_path, 48000)
-        enh = _load_audio_tensor(enhanced_path, 48000)
+        ref = _load_audio_tensor(reference_path, METRIC_REFERENCE_SAMPLE_RATE)
+        enh = _load_audio_tensor(enhanced_path, METRIC_REFERENCE_SAMPLE_RATE)
 
         min_len = min(len(ref), len(enh))
         ref = ref[:min_len]
@@ -301,7 +322,7 @@ class AudioMetrics:
 
         noise = ref - enh
         sdr_val = 10 * torch.log10(
-            torch.dot(ref, ref) / (torch.dot(noise, noise) + 1e-8) + 1e-8
+            torch.dot(ref, ref) / (torch.dot(noise, noise) + METRIC_EPSILON) + METRIC_EPSILON
         )
 
         return MetricResult("SDR", float(sdr_val), higher_is_better=True,
@@ -343,15 +364,21 @@ class AudioMetrics:
         """
         import librosa
 
-        ref_audio = _load_audio_tensor(reference_path, 22050).numpy()
-        enh_audio = _load_audio_tensor(enhanced_path, 22050).numpy()
+        ref_audio = _load_audio_tensor(reference_path, CONTENT_ANALYSIS_SAMPLE_RATE).numpy()
+        enh_audio = _load_audio_tensor(enhanced_path, CONTENT_ANALYSIS_SAMPLE_RATE).numpy()
 
         min_len = min(len(ref_audio), len(enh_audio))
         ref_audio = ref_audio[:min_len]
         enh_audio = enh_audio[:min_len]
 
-        chroma_ref = librosa.feature.chroma_stft(y=ref_audio, sr=22050, n_fft=4096, hop_length=512)
-        chroma_enh = librosa.feature.chroma_stft(y=enh_audio, sr=22050, n_fft=4096, hop_length=512)
+        chroma_ref = librosa.feature.chroma_stft(
+            y=ref_audio, sr=CONTENT_ANALYSIS_SAMPLE_RATE,
+            n_fft=CHROMA_N_FFT, hop_length=CHROMA_HOP_LENGTH,
+        )
+        chroma_enh = librosa.feature.chroma_stft(
+            y=enh_audio, sr=CONTENT_ANALYSIS_SAMPLE_RATE,
+            n_fft=CHROMA_N_FFT, hop_length=CHROMA_HOP_LENGTH,
+        )
 
         # Align frame counts
         min_frames = min(chroma_ref.shape[1], chroma_enh.shape[1])
@@ -360,8 +387,8 @@ class AudioMetrics:
 
         # Cosine similarity per frame, then average
         dot = np.sum(chroma_ref * chroma_enh, axis=0)
-        norm_ref = np.sqrt(np.sum(chroma_ref ** 2, axis=0)) + 1e-8
-        norm_enh = np.sqrt(np.sum(chroma_enh ** 2, axis=0)) + 1e-8
+        norm_ref = np.sqrt(np.sum(chroma_ref ** 2, axis=0)) + METRIC_EPSILON
+        norm_enh = np.sqrt(np.sum(chroma_enh ** 2, axis=0)) + METRIC_EPSILON
         cos_sim = dot / (norm_ref * norm_enh)
 
         return MetricResult("Chroma Similarity", float(np.mean(cos_sim)),
@@ -376,23 +403,23 @@ class AudioMetrics:
         """
         import librosa
 
-        ref_audio = _load_audio_tensor(reference_path, 22050).numpy()
-        enh_audio = _load_audio_tensor(enhanced_path, 22050).numpy()
+        ref_audio = _load_audio_tensor(reference_path, CONTENT_ANALYSIS_SAMPLE_RATE).numpy()
+        enh_audio = _load_audio_tensor(enhanced_path, CONTENT_ANALYSIS_SAMPLE_RATE).numpy()
 
         min_len = min(len(ref_audio), len(enh_audio))
         ref_audio = ref_audio[:min_len]
         enh_audio = enh_audio[:min_len]
 
-        mfcc_ref = librosa.feature.mfcc(y=ref_audio, sr=22050, n_mfcc=20)
-        mfcc_enh = librosa.feature.mfcc(y=enh_audio, sr=22050, n_mfcc=20)
+        mfcc_ref = librosa.feature.mfcc(y=ref_audio, sr=CONTENT_ANALYSIS_SAMPLE_RATE, n_mfcc=MFCC_N_COEFFICIENTS)
+        mfcc_enh = librosa.feature.mfcc(y=enh_audio, sr=CONTENT_ANALYSIS_SAMPLE_RATE, n_mfcc=MFCC_N_COEFFICIENTS)
 
         min_frames = min(mfcc_ref.shape[1], mfcc_enh.shape[1])
         mfcc_ref = mfcc_ref[:, :min_frames]
         mfcc_enh = mfcc_enh[:, :min_frames]
 
         dot = np.sum(mfcc_ref * mfcc_enh, axis=0)
-        norm_ref = np.sqrt(np.sum(mfcc_ref ** 2, axis=0)) + 1e-8
-        norm_enh = np.sqrt(np.sum(mfcc_enh ** 2, axis=0)) + 1e-8
+        norm_ref = np.sqrt(np.sum(mfcc_ref ** 2, axis=0)) + METRIC_EPSILON
+        norm_enh = np.sqrt(np.sum(mfcc_enh ** 2, axis=0)) + METRIC_EPSILON
         cos_sim = dot / (norm_ref * norm_enh)
 
         return MetricResult("MFCC Similarity", float(np.mean(cos_sim)),
@@ -400,7 +427,7 @@ class AudioMetrics:
                             description="Timbral preservation (0-1)")
 
     def onset_f1(self, reference_path: str, enhanced_path: str,
-                 tolerance_ms: float = 50.0) -> MetricResult:
+                 tolerance_ms: float = ONSET_TOLERANCE_MS) -> MetricResult:
         """Onset detection F1 score — verifies rhythm/timing is preserved.
 
         Detects note onsets in both files and measures how many match
@@ -408,11 +435,11 @@ class AudioMetrics:
         """
         import librosa
 
-        ref_audio = _load_audio_tensor(reference_path, 22050).numpy()
-        enh_audio = _load_audio_tensor(enhanced_path, 22050).numpy()
+        ref_audio = _load_audio_tensor(reference_path, CONTENT_ANALYSIS_SAMPLE_RATE).numpy()
+        enh_audio = _load_audio_tensor(enhanced_path, CONTENT_ANALYSIS_SAMPLE_RATE).numpy()
 
-        onsets_ref = librosa.onset.onset_detect(y=ref_audio, sr=22050, units="time")
-        onsets_enh = librosa.onset.onset_detect(y=enh_audio, sr=22050, units="time")
+        onsets_ref = librosa.onset.onset_detect(y=ref_audio, sr=CONTENT_ANALYSIS_SAMPLE_RATE, units="time")
+        onsets_enh = librosa.onset.onset_detect(y=enh_audio, sr=CONTENT_ANALYSIS_SAMPLE_RATE, units="time")
 
         if len(onsets_ref) == 0 and len(onsets_enh) == 0:
             return MetricResult("Onset F1", 1.0, higher_is_better=True,
@@ -434,10 +461,95 @@ class AudioMetrics:
         tp = len(matched_ref)
         precision = tp / len(onsets_enh) if onsets_enh.size > 0 else 0
         recall = tp / len(onsets_ref) if onsets_ref.size > 0 else 0
-        f1 = 2 * precision * recall / (precision + recall + 1e-8)
+        f1 = 2 * precision * recall / (precision + recall + METRIC_EPSILON)
 
         return MetricResult("Onset F1", float(f1), higher_is_better=True,
                             description="Rhythm preservation (0-1)")
+
+    def hf_energy_ratio(self, reference_path: str, enhanced_path: str) -> MetricResult:
+        """HF Energy Ratio — SR-specific metric measuring high-frequency reconstruction.
+
+        Compares the energy above the input Nyquist frequency (e.g., >24kHz for
+        48kHz→96kHz upsampling) between the reference and enhanced signals.
+        A ratio of 1.0 means perfect HF reconstruction; <1.0 means the model
+        failed to reconstruct some high-frequency content; >1.0 means excess HF
+        energy (potential artifacts).
+
+        This is the most critical metric for super-resolution evaluation as it
+        directly measures the model's ability to reconstruct the content that was
+        lost during downsampling.
+        """
+        # Load at output sample rate to capture full bandwidth
+        ref = _load_audio_tensor(reference_path, OUTPUT_SAMPLE_RATE)
+        enh = _load_audio_tensor(enhanced_path, OUTPUT_SAMPLE_RATE)
+
+        min_len = min(len(ref), len(enh))
+        ref = ref[:min_len]
+        enh = enh[:min_len]
+
+        # Crossover frequency: input Nyquist (e.g., 96kHz / 4 = 24kHz)
+        crossover_hz = OUTPUT_SAMPLE_RATE / HF_ENERGY_CROSSOVER_DIVISOR
+        crossover_bin = int(crossover_hz * HF_ENERGY_FFT_SIZE / OUTPUT_SAMPLE_RATE)
+
+        # Compute STFT magnitude for both signals
+        ref_stft = torch.stft(
+            ref, n_fft=HF_ENERGY_FFT_SIZE, hop_length=HF_ENERGY_HOP_SIZE,
+            return_complex=True,
+        ).abs()
+        enh_stft = torch.stft(
+            enh, n_fft=HF_ENERGY_FFT_SIZE, hop_length=HF_ENERGY_HOP_SIZE,
+            return_complex=True,
+        ).abs()
+
+        # HF energy: sum of squared magnitudes above crossover
+        ref_hf_energy = (ref_stft[crossover_bin:, :] ** 2).sum()
+        enh_hf_energy = (enh_stft[crossover_bin:, :] ** 2).sum()
+
+        # Ratio: enhanced HF energy / reference HF energy
+        ratio = float(enh_hf_energy / (ref_hf_energy + METRIC_EPSILON))
+
+        return MetricResult(
+            "HF Energy Ratio", ratio, higher_is_better=True,
+            description="HF reconstruction quality (1.0 = perfect, >24kHz band)",
+        )
+
+    def hf_spectral_distance(self, reference_path: str, enhanced_path: str) -> MetricResult:
+        """HF Spectral Distance — log-spectral distance in the high-frequency band.
+
+        Measures the frame-by-frame spectral shape difference above the input
+        Nyquist frequency. Lower = better spectral shape match. This captures
+        not just energy level but spectral envelope accuracy in the HF band.
+        """
+        ref = _load_audio_tensor(reference_path, OUTPUT_SAMPLE_RATE)
+        enh = _load_audio_tensor(enhanced_path, OUTPUT_SAMPLE_RATE)
+
+        min_len = min(len(ref), len(enh))
+        ref = ref[:min_len]
+        enh = enh[:min_len]
+
+        crossover_hz = OUTPUT_SAMPLE_RATE / HF_ENERGY_CROSSOVER_DIVISOR
+        crossover_bin = int(crossover_hz * HF_ENERGY_FFT_SIZE / OUTPUT_SAMPLE_RATE)
+
+        ref_stft = torch.stft(
+            ref, n_fft=HF_ENERGY_FFT_SIZE, hop_length=HF_ENERGY_HOP_SIZE,
+            return_complex=True,
+        ).abs()
+        enh_stft = torch.stft(
+            enh, n_fft=HF_ENERGY_FFT_SIZE, hop_length=HF_ENERGY_HOP_SIZE,
+            return_complex=True,
+        ).abs()
+
+        # Log-spectral distance in HF band per frame
+        ref_hf = ref_stft[crossover_bin:, :].clamp(min=METRIC_EPSILON)
+        enh_hf = enh_stft[crossover_bin:, :].clamp(min=METRIC_EPSILON)
+
+        log_dist = (torch.log10(ref_hf) - torch.log10(enh_hf)) ** 2
+        lsd = float(torch.sqrt(log_dist.mean()))
+
+        return MetricResult(
+            "HF Spectral Distance", lsd, higher_is_better=False,
+            description="Log-spectral distance in HF band (lower = better)",
+        )
 
     def content_preservation(self, reference_path: str, enhanced_path: str) -> dict:
         """Run all content preservation metrics.
@@ -509,5 +621,9 @@ class AudioMetrics:
         report.metrics.append(self.chroma_similarity(reference_path, enhanced_path))
         report.metrics.append(self.mfcc_similarity(reference_path, enhanced_path))
         report.metrics.append(self.onset_f1(reference_path, enhanced_path))
+
+        # SR-specific HF reconstruction quality
+        report.metrics.append(self.hf_energy_ratio(reference_path, enhanced_path))
+        report.metrics.append(self.hf_spectral_distance(reference_path, enhanced_path))
 
         return report

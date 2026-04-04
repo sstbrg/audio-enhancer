@@ -16,8 +16,23 @@ from pathlib import Path
 
 import numpy as np
 
+from models.constants import (
+    CLAP_GENRE_LABELS,
+    CLAP_GENRE_PROMPT_TEMPLATE,
+    CLAP_INSTRUMENT_LABELS,
+    CLAP_INSTRUMENT_PROMPT_TEMPLATE,
+    CLAP_MOOD_LABELS,
+    CLAP_MOOD_PROMPT_TEMPLATE,
+    CLAP_SAMPLE_RATE,
+    CLAP_TEMPERATURE,
+    ESSENTIA_DEFAULT_SAMPLE_RATE,
+    ESSENTIA_KEY_BPM_SAMPLE_RATE,
+    INSTRUMENT_MIN_PROBABILITY,
+    MERT_MAX_SECONDS,
+)
 
-def _load_mono_audio(path: str, target_sr: int = 16000) -> np.ndarray:
+
+def _load_mono_audio(path: str, target_sr: int = ESSENTIA_DEFAULT_SAMPLE_RATE) -> np.ndarray:
     """Load audio as mono float32 numpy array at target_sr."""
     try:
         import soundfile as sf
@@ -69,13 +84,13 @@ class MusicAnalyzer:
             essentia.log.warningActive = False
             from essentia.standard import MonoLoader, KeyExtractor, RhythmExtractor2013
 
-            audio = MonoLoader(filename=audio_path, sampleRate=16000)()
+            audio = MonoLoader(filename=audio_path, sampleRate=ESSENTIA_DEFAULT_SAMPLE_RATE)()
 
             results = {}
 
-            # Key detection (use 44100 for accuracy)
+            # Key detection (use 44.1kHz for accuracy)
             try:
-                audio_44k = MonoLoader(filename=audio_path, sampleRate=44100)()
+                audio_44k = MonoLoader(filename=audio_path, sampleRate=ESSENTIA_KEY_BPM_SAMPLE_RATE)()
                 key_extractor = KeyExtractor()
                 key, scale, strength = key_extractor(audio_44k)
                 results["key"] = f"{key} {scale}"
@@ -85,7 +100,7 @@ class MusicAnalyzer:
 
             # BPM
             try:
-                audio_44k = MonoLoader(filename=audio_path, sampleRate=44100)()
+                audio_44k = MonoLoader(filename=audio_path, sampleRate=ESSENTIA_KEY_BPM_SAMPLE_RATE)()
                 rhythm = RhythmExtractor2013(method="multifeature")
                 bpm, beats, beats_conf, _, _ = rhythm(audio_44k)
                 results["bpm"] = round(float(bpm), 1)
@@ -122,20 +137,7 @@ class MusicAnalyzer:
                 self._clap_model = laion_clap.CLAP_Module(enable_fusion=False)
                 self._clap_model.load_ckpt()
 
-            audio = _load_mono_audio(audio_path, target_sr=48000)
-
-            # Genre labels
-            genres = [
-                "rock", "pop", "jazz", "classical", "electronic", "hip hop",
-                "R&B", "metal", "folk", "country", "blues", "reggae",
-                "ambient", "punk", "soul", "funk", "latin"
-            ]
-
-            # Mood labels
-            moods = [
-                "happy", "sad", "energetic", "calm", "aggressive",
-                "melancholic", "uplifting", "dark", "romantic", "peaceful"
-            ]
+            audio = _load_mono_audio(audio_path, target_sr=CLAP_SAMPLE_RATE)
 
             # Get audio embedding
             audio_embed = self._clap_model.get_audio_embedding_from_data(
@@ -144,24 +146,22 @@ class MusicAnalyzer:
 
             results = {}
 
-            temperature = 10.0  # Sharpen the softmax distribution
-
             # Genre scores
-            genre_prompts = [f"this is {g} music" for g in genres]
+            genre_prompts = [CLAP_GENRE_PROMPT_TEMPLATE.format(g) for g in CLAP_GENRE_LABELS]
             genre_embeds = self._clap_model.get_text_embedding(genre_prompts, use_tensor=False)
             genre_sims = (audio_embed @ genre_embeds.T).squeeze()
-            genre_logits = genre_sims * temperature
+            genre_logits = genre_sims * CLAP_TEMPERATURE
             genre_probs = np.exp(genre_logits) / np.exp(genre_logits).sum()
-            top_genres = sorted(zip(genres, genre_probs.tolist()), key=lambda x: -x[1])[:5]
+            top_genres = sorted(zip(CLAP_GENRE_LABELS, genre_probs.tolist()), key=lambda x: -x[1])[:5]
             results["genre"] = {g: round(p, 3) for g, p in top_genres}
 
             # Mood scores
-            mood_prompts = [f"music that sounds {m}" for m in moods]
+            mood_prompts = [CLAP_MOOD_PROMPT_TEMPLATE.format(m) for m in CLAP_MOOD_LABELS]
             mood_embeds = self._clap_model.get_text_embedding(mood_prompts, use_tensor=False)
             mood_sims = (audio_embed @ mood_embeds.T).squeeze()
-            mood_logits = mood_sims * temperature
+            mood_logits = mood_sims * CLAP_TEMPERATURE
             mood_probs = np.exp(mood_logits) / np.exp(mood_logits).sum()
-            top_moods = sorted(zip(moods, mood_probs.tolist()), key=lambda x: -x[1])[:5]
+            top_moods = sorted(zip(CLAP_MOOD_LABELS, mood_probs.tolist()), key=lambda x: -x[1])[:5]
             results["mood"] = {m: round(p, 3) for m, p in top_moods}
 
             return results
@@ -191,7 +191,7 @@ class MusicAnalyzer:
             audio = _load_mono_audio(audio_path, target_sr=self._mert_processor.sampling_rate)
 
             # Process in chunks (MERT has max length)
-            max_samples = self._mert_processor.sampling_rate * 10  # 10 seconds
+            max_samples = self._mert_processor.sampling_rate * MERT_MAX_SECONDS
             if len(audio) > max_samples:
                 audio = audio[:max_samples]
 
@@ -210,33 +210,29 @@ class MusicAnalyzer:
             hidden = outputs.hidden_states[-1].squeeze(0).mean(dim=0)
 
             # Map to instrument likelihood using CLAP as zero-shot classifier
-            instruments = [
-                "guitar", "piano", "drums", "bass", "violin", "vocals",
-                "synthesizer", "trumpet", "saxophone", "flute", "cello",
-                "organ", "harmonica", "accordion"
-            ]
+            instruments = CLAP_INSTRUMENT_LABELS
 
             if self._clap_model is None:
                 import laion_clap
                 self._clap_model = laion_clap.CLAP_Module(enable_fusion=False)
                 self._clap_model.load_ckpt()
 
-            audio_48k = _load_mono_audio(audio_path, target_sr=48000)
+            audio_48k = _load_mono_audio(audio_path, target_sr=CLAP_SAMPLE_RATE)
             audio_embed = self._clap_model.get_audio_embedding_from_data(
                 x=audio_48k[np.newaxis, :], use_tensor=False
             )
 
-            inst_prompts = [f"a recording featuring {inst}" for inst in instruments]
+            inst_prompts = [CLAP_INSTRUMENT_PROMPT_TEMPLATE.format(inst) for inst in instruments]
             inst_embeds = self._clap_model.get_text_embedding(inst_prompts, use_tensor=False)
             inst_sims = (audio_embed @ inst_embeds.T).squeeze()
-            inst_logits = inst_sims * 10.0
+            inst_logits = inst_sims * CLAP_TEMPERATURE
             inst_probs = np.exp(inst_logits) / np.exp(inst_logits).sum()
 
             top_instruments = sorted(
                 zip(instruments, inst_probs.tolist()), key=lambda x: -x[1]
             )
-            # Return instruments with >5% probability
-            detected = {inst: round(prob, 3) for inst, prob in top_instruments if prob > 0.05}
+            # Return instruments above minimum probability threshold
+            detected = {inst: round(prob, 3) for inst, prob in top_instruments if prob > INSTRUMENT_MIN_PROBABILITY}
 
             return detected
 
