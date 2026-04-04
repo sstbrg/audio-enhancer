@@ -47,8 +47,7 @@ If either has open items, continue working until they are resolved.
 At the start of every task, before doing any work:
 1. `mcp__agent_tracker__agent_update` — set your status to "working" and current_task to a short description
 2. `mcp__agent_tracker__message_unread` (agent_name: "Lara") — fetch only unread messages addressed to you or "all", then act on them
-3b. `mcp__agent_tracker__message_mark_read` (agent_name: "Lara") — mark those messages read once actioned
-3c. `mcp__agent_tracker__message_delete` (message_ids: [...]) — delete messages you have fully read and actioned (task created or issue resolved)
+3b. `mcp__agent_tracker__message_mark_read` (agent_name: "Lara") — mark those messages read once actioned and task created — this also auto-deletes the message
 3. `mcp__agent_tracker__task_list` — read your assigned tasks
 
 During work:

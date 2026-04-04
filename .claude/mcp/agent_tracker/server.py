@@ -137,14 +137,26 @@ def message_unread(agent_name: str, limit: int = 20) -> str:
 
 @mcp.tool()
 def message_mark_read(agent_name: str, message_ids: list[int] | None = None) -> str:
-    """Mark messages as read by agent_name. Omit message_ids to mark all their messages read."""
-    count = mark_messages_read(agent_name, message_ids)
-    return f"Marked {count} messages as read for {agent_name}."
+    """Mark messages as read and delete them. Call after reading and actioning a message (task created or issue resolved)."""
+    marked = mark_messages_read(agent_name, message_ids)
+    # Determine which IDs to delete
+    if message_ids:
+        ids_to_delete = message_ids
+    else:
+        from db import get_conn
+        conn = get_conn()
+        rows = conn.execute(
+            "SELECT id FROM messages WHERE to_agent=? OR to_agent='all'", (agent_name,)
+        ).fetchall()
+        conn.close()
+        ids_to_delete = [r["id"] for r in rows]
+    deleted = delete_messages(ids_to_delete) if ids_to_delete else 0
+    return f"Marked {marked} messages read and deleted {deleted} for {agent_name}."
 
 
 @mcp.tool()
 def message_delete(message_ids: list[int]) -> str:
-    """Delete messages by ID. Call this after a message has been read and actioned (e.g. task created)."""
+    """Delete messages by ID."""
     count = delete_messages(message_ids)
     return f"Deleted {count} messages."
 
