@@ -1,34 +1,49 @@
 #!/bin/bash
 # One-command setup for a fresh Vast.ai instance.
 # Usage: ssh into instance, then:
-#   bash /workspace/audio-enhancer/infra/setup-vastai.sh [--from-gdrive] [--resume]
+#   bash /workspace/audio-enhancer/infra/setup-vastai.sh [--from-gdrive] [--resume] [--phase=N]
 #
 # --from-gdrive : pull datasets and checkpoints from Google Drive (requires rclone config)
 # --resume      : auto-start training from latest checkpoint after setup
+# --phase=N     : training phase (0 or 1, default: 0)
+#                 Phase 0: 48kHz->96kHz super-resolution
+#                 Phase 1: degradation restoration (fine-tune from Phase 0 checkpoint)
 set -euo pipefail
 
 PROJECT_DIR="/workspace/audio-enhancer"
 VENV="$PROJECT_DIR/.venv"
 RAW_DIR="$PROJECT_DIR/datasets/raw"
 EXTRACT_DIR="$PROJECT_DIR/datasets/extracted"
-CHECKPOINT_DIR="$PROJECT_DIR/checkpoints/phase0"
 GDRIVE_PATH="audio-enhancer-datasets"
-GDRIVE_CHECKPOINTS="$GDRIVE_PATH/checkpoints"
-CONFIG="$PROJECT_DIR/configs/phase0.yaml"
-DATA_DIR="$PROJECT_DIR/datasets/phase0_combined"
 MIN_DISK_GB=50
 MIN_CUDA_GB=20
 
 # Parse flags
 OPT_GDRIVE=0
 OPT_RESUME=0
+PHASE=0
 for arg in "$@"; do
     case "$arg" in
         --from-gdrive) OPT_GDRIVE=1 ;;
         --resume)      OPT_RESUME=1 ;;
+        --phase=*)     PHASE="${arg#--phase=}" ;;
         *) echo "Unknown flag: $arg"; exit 1 ;;
     esac
 done
+
+# Phase-dependent paths
+CHECKPOINT_DIR="$PROJECT_DIR/checkpoints/phase${PHASE}"
+CONFIG="$PROJECT_DIR/configs/phase${PHASE}.yaml"
+DATA_DIR="$PROJECT_DIR/datasets/phase${PHASE}_combined"
+
+# Google Drive checkpoint path:
+# Phase 0 keeps original location for backward compatibility with existing checkpoints.
+# Phase N (N>0) uses a subdirectory to separate from Phase 0.
+if [ "$PHASE" = "0" ]; then
+    GDRIVE_CHECKPOINTS="$GDRIVE_PATH/checkpoints"
+else
+    GDRIVE_CHECKPOINTS="$GDRIVE_PATH/checkpoints/phase${PHASE}"
+fi
 
 log()  { echo "[$(date '+%H:%M:%S')] $*"; }
 ok()   { echo "[$(date '+%H:%M:%S')] OK  $*"; }
@@ -37,7 +52,11 @@ die()  { err "$*"; exit 1; }
 
 echo "=== Audio Enhancer — Vast.ai Setup ==="
 log "Project: $PROJECT_DIR"
-log "Flags: gdrive=$OPT_GDRIVE resume=$OPT_RESUME"
+log "Phase:   $PHASE"
+log "Config:  $CONFIG"
+log "Data:    $DATA_DIR"
+log "Ckpts:   $CHECKPOINT_DIR"
+log "Flags:   gdrive=$OPT_GDRIVE resume=$OPT_RESUME"
 
 # ── [0] Health checks ─────────────────────────────────────────────────────────
 
@@ -161,46 +180,51 @@ fi
 # ── [4] Datasets ──────────────────────────────────────────────────────────────
 
 log "[4/6] Setting up datasets..."
-mkdir -p "$RAW_DIR" "$EXTRACT_DIR"
+mkdir -p "$RAW_DIR" "$EXTRACT_DIR" "$DATA_DIR"
 
 if (( OPT_GDRIVE )); then
     log "  Pulling datasets from Google Drive..."
     python "$PROJECT_DIR/infra/datasets.py" pull
-else
-    log "  Downloading core datasets from Zenodo..."
+elif [ "$PHASE" = "0" ]; then
+    log "  Downloading Phase 0 core datasets from Zenodo..."
     cd "$RAW_DIR"
     [ -f EG-IPT.zip ] || wget -q --show-progress -O EG-IPT.zip \
         "https://zenodo.org/records/15205644/files/EG-IPT.zip?download=1" &
     [ -f musdb18hq.zip ] || wget -q --show-progress -O musdb18hq.zip \
         "https://zenodo.org/records/3338373/files/musdb18hq.zip?download=1" &
     wait
-fi
-
-# Extract datasets
-if [ ! -d "$EXTRACT_DIR/EG-IPT" ] && [ -f "$RAW_DIR/EG-IPT.zip" ]; then
-    log "  Extracting EG-IPT..."
-    unzip -q "$RAW_DIR/EG-IPT.zip" -d "$EXTRACT_DIR/EG-IPT"
-    ok "  EG-IPT extracted"
 else
-    [ -d "$EXTRACT_DIR/EG-IPT" ] && ok "  EG-IPT already extracted"
+    log "  Phase ${PHASE}: datasets must be pulled from Google Drive (--from-gdrive required)"
+    log "  Re-run with: bash $0 --phase=${PHASE} --from-gdrive"
+    die "Phase ${PHASE} datasets not available without --from-gdrive"
 fi
 
-if [ ! -d "$EXTRACT_DIR/musdb18hq" ] && [ -f "$RAW_DIR/musdb18hq.zip" ]; then
-    log "  Extracting MUSDB18-HQ..."
-    unzip -q "$RAW_DIR/musdb18hq.zip" -d "$EXTRACT_DIR/musdb18hq"
-    ok "  MUSDB18-HQ extracted"
-else
-    [ -d "$EXTRACT_DIR/musdb18hq" ] && ok "  MUSDB18-HQ already extracted"
-fi
-
-# Symlinks for training
-mkdir -p "$DATA_DIR"
-for name in EG-IPT musdb18hq; do
-    if [ -d "$EXTRACT_DIR/$name" ] && [ ! -L "$DATA_DIR/$name" ]; then
-        ln -sf "$EXTRACT_DIR/$name" "$DATA_DIR/$name"
-        log "  Linked $name into phase0_combined"
+# Extract datasets (Phase 0 only — Phase 1 datasets arrive pre-extracted via Drive)
+if [ "$PHASE" = "0" ]; then
+    if [ ! -d "$EXTRACT_DIR/EG-IPT" ] && [ -f "$RAW_DIR/EG-IPT.zip" ]; then
+        log "  Extracting EG-IPT..."
+        unzip -q "$RAW_DIR/EG-IPT.zip" -d "$EXTRACT_DIR/EG-IPT"
+        ok "  EG-IPT extracted"
+    else
+        [ -d "$EXTRACT_DIR/EG-IPT" ] && ok "  EG-IPT already extracted"
     fi
-done
+
+    if [ ! -d "$EXTRACT_DIR/musdb18hq" ] && [ -f "$RAW_DIR/musdb18hq.zip" ]; then
+        log "  Extracting MUSDB18-HQ..."
+        unzip -q "$RAW_DIR/musdb18hq.zip" -d "$EXTRACT_DIR/musdb18hq"
+        ok "  MUSDB18-HQ extracted"
+    else
+        [ -d "$EXTRACT_DIR/musdb18hq" ] && ok "  MUSDB18-HQ already extracted"
+    fi
+
+    # Symlinks for training
+    for name in EG-IPT musdb18hq; do
+        if [ -d "$EXTRACT_DIR/$name" ] && [ ! -L "$DATA_DIR/$name" ]; then
+            ln -sf "$EXTRACT_DIR/$name" "$DATA_DIR/$name"
+            log "  Linked $name into phase${PHASE}_combined"
+        fi
+    done
+fi
 
 ok "Datasets ready"
 
@@ -238,6 +262,7 @@ import sys
 from pathlib import Path
 
 project = Path('$PROJECT_DIR')
+phase = '$PHASE'
 ok = True
 
 # Check CUDA
@@ -248,15 +273,15 @@ else:
     print(f'  PASS: CUDA — {torch.cuda.get_device_name(0)}')
 
 # Check data dir has content
-data_dir = project / 'datasets/phase0_combined'
+data_dir = project / f'datasets/phase{phase}_combined'
 if data_dir.exists():
     entries = list(data_dir.iterdir())
     print(f'  PASS: data dir has {len(entries)} entries')
 else:
-    print('  WARN: datasets/phase0_combined not found — training will need data')
+    print(f'  WARN: datasets/phase{phase}_combined not found — training will need data')
 
 # Check config
-config = project / 'configs/phase0.yaml'
+config = project / f'configs/phase{phase}.yaml'
 if config.exists():
     print(f'  PASS: config {config.name} found')
 else:
@@ -264,18 +289,21 @@ else:
     ok = False
 
 # Check for latest checkpoint
-ckpt = project / 'checkpoints/phase0/latest.pt'
+ckpt = project / f'checkpoints/phase{phase}/latest.pt'
 if ckpt.exists():
     print(f'  PASS: latest.pt checkpoint found — training will resume')
 else:
-    print('  INFO: No latest.pt — training will start from scratch')
+    if phase == '0':
+        print('  INFO: No latest.pt — training will start from scratch')
+    else:
+        print(f'  WARN: No Phase {phase} latest.pt — expected pretrained checkpoint for fine-tuning')
 
 if not ok:
     sys.exit(1)
 "
 
 echo ""
-echo "=== Setup complete ==="
+echo "=== Setup complete (Phase ${PHASE}) ==="
 echo ""
 echo "To start training manually:"
 echo "  cd $PROJECT_DIR && source .venv/bin/activate"
@@ -290,13 +318,13 @@ echo "    --checkpoint_dir $CHECKPOINT_DIR \\"
 echo "    --max-hours 5$RESUME_FLAG"
 echo ""
 echo "Or run the full automated workflow:"
-echo "  bash $PROJECT_DIR/infra/auto_train.sh"
+echo "  bash $PROJECT_DIR/infra/auto_train.sh --phase=${PHASE}"
 
 # ── Auto-resume training if requested ─────────────────────────────────────────
 
 if (( OPT_RESUME )); then
     log "Auto-resume requested, launching training in tmux session 'train'..."
     tmux new-session -d -s train \
-        "cd $PROJECT_DIR && source .venv/bin/activate && bash infra/auto_train.sh 2>&1 | tee /tmp/train.log"
+        "cd $PROJECT_DIR && source .venv/bin/activate && bash infra/auto_train.sh --phase=${PHASE} 2>&1 | tee /tmp/train.log"
     log "Training started in tmux session 'train'. Attach with: tmux attach -t train"
 fi

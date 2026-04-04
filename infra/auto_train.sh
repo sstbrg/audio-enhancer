@@ -10,7 +10,11 @@
 #   6. Auto-shutdown when training completes or hits max hours
 #
 # Usage:
-#   bash infra/auto_train.sh [--no-pull-data] [--no-shutdown] [--max-hours N]
+#   bash infra/auto_train.sh [--no-pull-data] [--no-shutdown] [--max-hours N] [--phase=N]
+#
+# --phase=N : training phase (0 or 1, default: 0)
+#             Phase 0: 48kHz->96kHz super-resolution
+#             Phase 1: degradation restoration (fine-tune from Phase 0 checkpoint)
 #
 # Environment variables (override defaults):
 #   MAX_HOURS             — max training hours (default: 5)
@@ -20,10 +24,6 @@ set -euo pipefail
 
 PROJECT_DIR="/workspace/audio-enhancer"
 VENV="$PROJECT_DIR/.venv"
-CONFIG="$PROJECT_DIR/configs/phase0.yaml"
-DATA_DIR="$PROJECT_DIR/datasets/phase0_combined"
-CHECKPOINT_DIR="$PROJECT_DIR/checkpoints/phase0"
-GDRIVE_CHECKPOINTS="audio-enhancer-datasets/checkpoints"
 LOG_DIR="$PROJECT_DIR/logs"
 TRAIN_LOG="$LOG_DIR/train_$(date '+%Y%m%d_%H%M%S').log"
 
@@ -35,15 +35,31 @@ IDLE_SHUTDOWN_MIN="${IDLE_SHUTDOWN_MIN:-15}"
 # Parse flags
 OPT_NO_PULL_DATA=0
 OPT_NO_SHUTDOWN=0
+PHASE=0
 for arg in "$@"; do
     case "$arg" in
         --no-pull-data)  OPT_NO_PULL_DATA=1 ;;
         --no-shutdown)   OPT_NO_SHUTDOWN=1 ;;
+        --phase=*)       PHASE="${arg#--phase=}" ;;
         --max-hours)     shift; MAX_HOURS="$1" ;;
         --max-hours=*)   MAX_HOURS="${arg#--max-hours=}" ;;
         *) echo "Unknown flag: $arg"; exit 1 ;;
     esac
 done
+
+# Phase-dependent paths
+CONFIG="$PROJECT_DIR/configs/phase${PHASE}.yaml"
+DATA_DIR="$PROJECT_DIR/datasets/phase${PHASE}_combined"
+CHECKPOINT_DIR="$PROJECT_DIR/checkpoints/phase${PHASE}"
+
+# Google Drive checkpoint path:
+# Phase 0 keeps original location for backward compatibility with existing checkpoints.
+# Phase N (N>0) uses a subdirectory to separate from Phase 0.
+if [ "$PHASE" = "0" ]; then
+    GDRIVE_CHECKPOINTS="audio-enhancer-datasets/checkpoints"
+else
+    GDRIVE_CHECKPOINTS="audio-enhancer-datasets/checkpoints/phase${PHASE}"
+fi
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$TRAIN_LOG"; }
 ok()   { log "OK  $*"; }
@@ -51,7 +67,10 @@ err()  { log "ERR $*" >&2; }
 die()  { err "$*"; exit 1; }
 
 mkdir -p "$LOG_DIR" "$CHECKPOINT_DIR"
-log "=== Auto Train — $(date) ==="
+log "=== Auto Train (Phase ${PHASE}) — $(date) ==="
+log "Config:  $CONFIG"
+log "Data:    $DATA_DIR"
+log "Ckpts:   $CHECKPOINT_DIR"
 log "MAX_HOURS=$MAX_HOURS  PUSH_INTERVAL=${CHECKPOINT_PUSH_INTERVAL_MIN}min  IDLE_SHUTDOWN=${IDLE_SHUTDOWN_MIN}min"
 log "Log: $TRAIN_LOG"
 
