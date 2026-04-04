@@ -16,8 +16,8 @@ Batch composition is controlled by ``quality_sampling`` weights in the training 
 import random
 from pathlib import Path
 
+import soundfile as sf
 import torch
-import torchaudio
 from torch.utils.data import Dataset
 
 from models.constants import INPUT_SAMPLE_RATE, OUTPUT_SAMPLE_RATE
@@ -104,8 +104,8 @@ class AudioSRDataset(Dataset):
 
         for i, path in enumerate(self.files):
             try:
-                info = torchaudio.info(str(path))
-                sr = info.sample_rate
+                info = sf.info(str(path))
+                sr = info.samplerate
                 if sr >= 96000:
                     self.hires_indices.append(i)
                 elif sr >= 48000:

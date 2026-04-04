@@ -317,7 +317,7 @@ def train(args):
     start_epoch = 0
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
-        generator.load_state_dict(ckpt["generator"])
+        generator.load_state_dict(ckpt["generator"], strict=False)
         mpd.load_state_dict(ckpt["mpd"])
         msd.load_state_dict(ckpt["msd"])
         optim_g.load_state_dict(ckpt["optim_g"])
