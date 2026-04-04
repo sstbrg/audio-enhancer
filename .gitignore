@@ -29,6 +29,7 @@ infra/terraform.tfvars
 .vscode/
 .idea/
 .claude/
+.mcp.json
 
 # OS
 .DS_Store

@@ -51,6 +51,17 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def _unwrap_state_dict(model: torch.nn.Module) -> dict:
+    """Return state_dict without torch.compile _orig_mod.* key prefix.
+
+    torch.compile wraps the module and prefixes all state_dict keys with
+    ``_orig_mod.``.  Checkpoints must be saved without this prefix so they
+    can be loaded into a raw (pre-compile) model on resume.
+    """
+    raw = getattr(model, "_orig_mod", model)
+    return raw.state_dict()
+
+
 @torch.no_grad()
 def _run_validation(generator, loader, device, writer, epoch, global_step, output_sr):
     """Run full validation metrics and log to TensorBoard."""
