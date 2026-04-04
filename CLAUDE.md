@@ -140,6 +140,8 @@ This project uses a 12-person agent team defined in `.claude/agents/` and descri
 7. Agents should read CLAUDE.md and relevant code before making decisions.
 8. Agents can talk to each other.
 9. All agents can commit and push to git develop branch.
+10. **If an agent hits its maxTurns limit and stops responding**, the team lead must immediately spawn a fresh agent of the same type (with a `-2` suffix, e.g., `rona-2`) to continue the unfinished work. Pass full context of what was done and what remains in the new agent's prompt.
+11. Agents are tracked via the agents manager MCP (under .claude/mcp/)
 
 ## Commands
 

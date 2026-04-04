@@ -524,16 +524,25 @@ _VASTAI_KEY_FILE = Path.home() / ".config" / "vastai" / "vast_api_key"
 # How long to cache the rclone Drive reachability result (seconds)
 DRIVE_CACHE_TTL_S = 60
 
-# ── Non-blocking Google Drive reachability check ──────────────────────────────
+# How long to cache the Vast.ai instances result (seconds)
+VASTAI_CACHE_TTL_S = 30
+
+# ── Non-blocking caches ───────────────────────────────────────────────────────
 
 import threading as _threading
 
 _drive_cache: dict = {"html": '<span class="muted">checking…</span>', "ts": 0.0}
 _drive_lock = _threading.Lock()
+_drive_checking = False  # guard against concurrent background threads
+
+_vastai_cache: dict = {"html": f'<p class="muted">checking…</p>', "ts": 0.0}
+_vastai_lock = _threading.Lock()
+_vastai_checking = False  # guard against concurrent background threads
 
 
 def _check_drive_reachability() -> None:
     """Run rclone check in a background thread and update the cache."""
+    global _drive_checking
     import subprocess
     try:
         result = subprocess.run(
@@ -553,15 +562,20 @@ def _check_drive_reachability() -> None:
     with _drive_lock:
         _drive_cache["html"] = html
         _drive_cache["ts"] = time.time()
+        _drive_checking = False
 
 
 def _get_drive_status_html() -> str:
     """Return cached Drive status; trigger a background refresh if stale."""
+    global _drive_checking
     with _drive_lock:
         age = time.time() - _drive_cache["ts"]
         cached_html = _drive_cache["html"]
+        should_refresh = age > DRIVE_CACHE_TTL_S and not _drive_checking
+        if should_refresh:
+            _drive_checking = True
 
-    if age > DRIVE_CACHE_TTL_S:
+    if should_refresh:
         _threading.Thread(target=_check_drive_reachability, daemon=True).start()
 
     return cached_html
@@ -776,13 +790,26 @@ def _build_instance_html(inst: dict) -> str:
     """
 
 
-def build_infra_html() -> str:
-    import subprocess
+def _build_vastai_section_html(instances: list[dict], source: str, fetch_error: str, api_key: str) -> str:
+    if fetch_error and not instances:
+        return f'<p class="badge-bad">Failed to fetch instances: {fetch_error}</p>'
+    if not instances:
+        key_note = (
+            '<p class="muted" style="font-size:0.85em">'
+            'Set <code>VAST_API_KEY</code> or run '
+            '<code>vastai set api-key YOUR_KEY</code></p>'
+        ) if not api_key else ""
+        return '<p class="badge-ok">No running instances found.</p>' + key_note
+    source_note = f'<p class="note">Source: {source} &nbsp;·&nbsp; {len(instances)} instance(s)</p>'
+    return source_note + "".join(_build_instance_html(i) for i in instances)
 
-    # ── Vast.ai section ──────────────────────────────────────────────────────
-    api_key    = _get_vastai_api_key()
+
+def _fetch_vastai_section() -> None:
+    """Fetch Vast.ai instances in a background thread and update the cache."""
+    global _vastai_checking
+    api_key     = _get_vastai_api_key()
     instances: list[dict] = []
-    source     = ""
+    source      = ""
     fetch_error = ""
 
     if api_key:
@@ -792,7 +819,6 @@ def build_infra_html() -> str:
         except Exception as e:
             fetch_error = str(e)
 
-    # CLI fallback (also works without the API key if the CLI is authenticated)
     if not instances and not fetch_error:
         try:
             instances = _fetch_vastai_instances_cli()
@@ -800,36 +826,46 @@ def build_infra_html() -> str:
         except Exception as e:
             fetch_error = str(e)
 
-    if fetch_error and not instances:
-        vastai_html = f'<p class="badge-bad">Failed to fetch instances: {fetch_error}</p>'
-    elif not instances:
-        key_note = (
-            '<p class="muted" style="font-size:0.85em">'
-            'Set <code>VAST_API_KEY</code> or run '
-            '<code>vastai set api-key YOUR_KEY</code></p>'
-        ) if not api_key else ""
-        vastai_html = '<p class="badge-ok">No running instances found.</p>' + key_note
-    else:
-        source_note = f'<p class="note">Source: {source} &nbsp;·&nbsp; {len(instances)} instance(s)</p>'
-        vastai_html = source_note + "".join(_build_instance_html(i) for i in instances)
+    html = _build_vastai_section_html(instances, source, fetch_error, api_key)
 
-    # ── Google Drive section (non-blocking — uses cached result) ─────────────
-    drive_remote = DEFAULT_GDRIVE_REMOTE
-    drive_dir    = DEFAULT_GDRIVE_DIR
+    with _vastai_lock:
+        _vastai_cache["html"] = html
+        _vastai_cache["ts"] = time.time()
+        _vastai_checking = False
 
+
+def _get_vastai_section_html() -> str:
+    """Return cached Vast.ai section HTML; trigger background refresh if stale."""
+    global _vastai_checking
+    with _vastai_lock:
+        age = time.time() - _vastai_cache["ts"]
+        cached_html = _vastai_cache["html"]
+        should_refresh = age > VASTAI_CACHE_TTL_S and not _vastai_checking
+        if should_refresh:
+            _vastai_checking = True
+
+    if should_refresh:
+        _threading.Thread(target=_fetch_vastai_section, daemon=True).start()
+
+    return cached_html
+
+
+def build_infra_html() -> str:
+    # Both Vast.ai and Drive sections are non-blocking — return cached values
+    # and trigger background refreshes if stale.
     gdrive_rows = f"""
     <tr><td class="label">{t("infra_drive_remote")}</td>
-        <td><code>{drive_remote}</code></td></tr>
+        <td><code>{DEFAULT_GDRIVE_REMOTE}</code></td></tr>
     <tr><td class="label">{t("infra_drive_dir")}</td>
-        <td><code>{drive_dir}</code></td></tr>
+        <td><code>{DEFAULT_GDRIVE_DIR}</code></td></tr>
     <tr><td class="label">{t("infra_status")}</td>
         <td>{_get_drive_status_html()}</td></tr>
     """
 
-    html = f"""
+    return f"""
     <div class="train-summary">
       <h3>{t("infra_vastai_header")}</h3>
-      {vastai_html}
+      {_get_vastai_section_html()}
 
       <h3>{t("infra_gdrive_header")}</h3>
       <table style="width:100%;border-collapse:collapse">
@@ -837,7 +873,6 @@ def build_infra_html() -> str:
       </table>
     </div>
     """
-    return html
 
 
 def refresh_infra() -> str:
@@ -892,7 +927,7 @@ def build_app() -> gr.Blocks:
                 timer = gr.Timer(value=AUTO_REFRESH_INTERVAL_S, active=False)
                 timer.tick(fn=refresh_training, inputs=[], outputs=[train_html, g_plot, d_plot])
                 auto_cb.change(
-                    fn=lambda active: gr.Timer(active=active),
+                    fn=lambda active: gr.update(active=active),
                     inputs=[auto_cb],
                     outputs=[timer],
                 )
