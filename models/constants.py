@@ -47,7 +47,7 @@ UPSCALE_ENERGY_SMOOTH_BINS = 20      # Smoothing window (bins) for mean power sp
 UPSCALE_CEILING_TOLERANCE = 0.05     # Fraction of Nyquist — treat as full if within this
 
 # Codec artifact detection
-UPSCALE_CODEC_CUTOFF_DROP_DB = 20.0  # Min dB drop to flag as hard cutoff
+UPSCALE_CODEC_CUTOFF_DROP_DB = 15.0  # Min dB drop to flag as hard cutoff
 UPSCALE_CODEC_CUTOFF_CANDIDATES_HZ = [11000, 15000, 16000, 18000, 19000, 20000, 22000]
 UPSCALE_CODEC_CUTOFF_BAND_HZ = 500   # Band width (Hz) for energy measurement around cutoff
 UPSCALE_CODEC_PASSBAND_MIN_RATIO = 1e-6  # Min pass-band energy fraction for meaningful test
@@ -58,7 +58,7 @@ UPSCALE_SBR_CORRELATION_THRESHOLD = 0.80  # Spectral Band Replication detection 
 
 # Bit-depth headroom
 UPSCALE_CANDIDATE_BIT_DEPTHS = [8, 16, 20, 24, 32]  # Probe depths (ascending)
-UPSCALE_BIT_DEPTH_RESIDUAL_THRESHOLD = 1e-9  # Quantisation residual power threshold
+UPSCALE_BIT_DEPTH_RESIDUAL_THRESHOLD = 1e-10  # Quantisation residual power threshold
 
 # Spectral rolloff vs Nyquist gap
 UPSCALE_ROLLOFF_PERCENT = 0.99       # Cumulative energy fraction for rolloff
@@ -68,3 +68,8 @@ UPSCALE_WEIGHT_SR_CEILING = 0.35
 UPSCALE_WEIGHT_CODEC = 0.25
 UPSCALE_WEIGHT_BIT_DEPTH = 0.15
 UPSCALE_WEIGHT_GAP = 0.25
+
+# Score verdict thresholds (used in backend _build_summary and frontend renderer)
+UPSCALE_SCORE_HIGH = 70     # score >= HIGH  → "high potential"
+UPSCALE_SCORE_MEDIUM = 40   # score >= MEDIUM → "medium potential"
+UPSCALE_SCORE_LOW = 10      # score >= LOW   → "low potential" (else "already optimal")

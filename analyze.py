@@ -13,6 +13,12 @@ Metrics:
     - Spectral centroid, bandwidth, rolloff
     - Stereo width (if stereo)
 
+  Upscale Potential (always available):
+    - Sample rate ceiling (true bandwidth vs nominal SR)
+    - Codec artifact detection (MP3/AAC cutoff, pre-echo, SBR)
+    - Bit depth headroom (effective vs declared)
+    - Spectral rolloff vs Nyquist gap
+
   No-reference (need optional packages):
     - Audiobox Aesthetics (PQ, CE, PC, CU)
     - PAM (perceptual clarity)
@@ -217,6 +223,58 @@ def main():
         print_metric("Spectral Bandwidth", spec["spectral_bandwidth_hz"], "Hz")
         print_metric("Spectral Rolloff (95%)", spec["spectral_rolloff_hz"], "Hz")
         print_metric("Nyquist", spec["nyquist_hz"], "Hz")
+
+    # Upscale potential
+    print_section("Upscale Potential")
+    from metrics.upscale_potential import analyze_upscale_potential
+    up = analyze_upscale_potential(path)
+
+    score = up["composite_score"]
+    if score >= 70:
+        score_good = False   # needs work
+    elif score >= 40:
+        score_good = None    # moderate
+    else:
+        score_good = True    # already hi-res
+
+    print_metric("Composite Score", f"{score}/100", "", good=score_good)
+    print_metric("Summary", up["summary"])
+
+    src = up["sample_rate_ceiling"]
+    print_metric("  Effective Bandwidth", src["effective_sr"] // 2, "Hz")
+    print_metric("  Bandwidth Utilization",
+                 f"{src['bandwidth_utilization'] * 100:.1f}", "%")
+
+    cod = up["codec_artifacts"]
+    if cod["codec_artifacts_detected"]:
+        print_metric("  Codec Artifacts",
+                     f"{cod['likely_codec'].upper()} ({cod['confidence'] * 100:.0f}%)",
+                     good=False)
+        if cod["cutoff_hz"]:
+            print_metric("    Hard Cutoff", int(cod["cutoff_hz"]), "Hz")
+        if cod["pre_echo_events"] > 0:
+            print_metric("    Pre-echo Events", cod["pre_echo_events"])
+        if cod["sbr_detected"]:
+            print_metric("    SBR Detected", "yes")
+    else:
+        print_metric("  Codec Artifacts", "none detected", good=True)
+
+    bd = up["bit_depth_headroom"]
+    if bd["headroom_db"] > 0:
+        print_metric("  Effective Bit Depth",
+                     f"{bd['effective_bit_depth']}-bit in {bd['declared_bit_depth']}-bit",
+                     f"(+{bd['headroom_db']:.0f}dB headroom)")
+    else:
+        print_metric("  Bit Depth", f"{bd['declared_bit_depth']}-bit",
+                     "(fully used)", good=True)
+
+    gp = up["spectral_gap"]
+    if gp["gap_ratio"] > 0.15:
+        print_metric("  Spectral Gap", f"{int(gp['gap_hz'])}",
+                     f"Hz below Nyquist ({gp['gap_ratio'] * 100:.0f}% unused)",
+                     good=False)
+    else:
+        print_metric("  Spectral Gap", "minimal", good=True)
 
     # No-reference perceptual metrics
     print_section("Perceptual Quality (no-reference)")

@@ -41,6 +41,9 @@ from models.constants import (
     UPSCALE_PRE_ECHO_WINDOW_MS as PRE_ECHO_WINDOW_MS,
     UPSCALE_ROLLOFF_PERCENT as ROLLOFF_PERCENT,
     UPSCALE_SBR_CORRELATION_THRESHOLD as SBR_CORRELATION_THRESHOLD,
+    UPSCALE_SCORE_HIGH as SCORE_HIGH,
+    UPSCALE_SCORE_LOW as SCORE_LOW,
+    UPSCALE_SCORE_MEDIUM as SCORE_MEDIUM,
     UPSCALE_SPREAD_SAMPLE_FRAMES as SPREAD_SAMPLE_FRAMES,
     UPSCALE_WEIGHT_BIT_DEPTH as WEIGHT_BIT_DEPTH,
     UPSCALE_WEIGHT_CODEC as WEIGHT_CODEC,
@@ -482,9 +485,9 @@ def _build_summary(
             f"({int(gap['gap_ratio'] * 100)}% unused)"
         )
 
-    if score >= 70:
+    if score >= SCORE_HIGH:
         verdict = "High upscale potential"
-    elif score >= 40:
+    elif score >= SCORE_MEDIUM:
         verdict = "Moderate upscale potential"
     else:
         verdict = "Low upscale potential"

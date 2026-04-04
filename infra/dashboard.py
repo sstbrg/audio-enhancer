@@ -418,11 +418,123 @@ def _make_loss_figure(steps: list, series: list[tuple[str, list]], title: str):
     return fig
 
 
+def _format_loss(val: float | None) -> str:
+    """Format a loss value for display, or return the N/A marker."""
+    if val is None:
+        return f'<span class="muted">{t("ckpt_metrics_na")}</span>'
+    return f"{val:.2f}"
+
+
+def _build_epoch_summary_html(scalars: dict) -> str:
+    """Build an HTML table summarising per-epoch average loss values.
+
+    Reads 'train/epoch' scalar to determine epoch boundaries, then computes
+    per-epoch means for g_loss and d_loss.  Falls back to a single-row
+    summary when no epoch tag is available (epoch 0 completed case).
+    """
+    g_steps_all, g_vals_all = scalars.get("train/g_loss", ([], []))
+    d_steps_all, d_vals_all = scalars.get("train/d_loss", ([], []))
+
+    if not g_steps_all and not d_steps_all:
+        return (
+            f'<p class="muted note">{t("train_epoch_no_data")}</p>'
+        )
+
+    # If epoch tag is present use it to bucket steps; otherwise treat all
+    # existing data as epoch 0.
+    epoch_scalars = scalars.get("train/epoch", ([], []))
+    epoch_steps_raw, epoch_vals_raw = epoch_scalars
+
+    if epoch_steps_raw:
+        # Build a step→epoch mapping
+        step_to_epoch: dict[int, int] = {}
+        for s, e in zip(epoch_steps_raw, epoch_vals_raw):
+            step_to_epoch[int(s)] = int(e)
+
+        def _epoch_for_step(step: int) -> int:
+            # Find the closest epoch boundary at or before this step
+            best = 0
+            for es in sorted(step_to_epoch):
+                if es <= step:
+                    best = step_to_epoch[es]
+                else:
+                    break
+            return best
+
+        # Collect per-epoch g/d values
+        epoch_g: dict[int, list[float]] = {}
+        for step, val in zip(g_steps_all, g_vals_all):
+            ep = _epoch_for_step(int(step))
+            epoch_g.setdefault(ep, []).append(val)
+
+        epoch_d: dict[int, list[float]] = {}
+        for step, val in zip(d_steps_all, d_vals_all):
+            ep = _epoch_for_step(int(step))
+            epoch_d.setdefault(ep, []).append(val)
+
+        all_epochs = sorted(set(list(epoch_g.keys()) + list(epoch_d.keys())))
+    else:
+        # No epoch tag: treat everything as epoch 0
+        epoch_g = {0: list(g_vals_all)} if g_vals_all else {}
+        epoch_d = {0: list(d_vals_all)} if d_vals_all else {}
+        all_epochs = [0]
+
+    if not all_epochs:
+        return f'<p class="muted note">{t("train_epoch_no_data")}</p>'
+
+    rows_html = ""
+    for ep in all_epochs:
+        g_list = epoch_g.get(ep, [])
+        d_list = epoch_d.get(ep, [])
+        n_steps = max(len(g_list), len(d_list))
+        g_avg = sum(g_list) / len(g_list) if g_list else None
+        d_avg = sum(d_list) / len(d_list) if d_list else None
+        rows_html += f"""
+        <tr>
+          <td style="text-align:center">{ep}</td>
+          <td style="text-align:right">{n_steps:,}</td>
+          <td style="text-align:right;font-family:monospace">{_format_loss(g_avg)}</td>
+          <td style="text-align:right;font-family:monospace">{_format_loss(d_avg)}</td>
+        </tr>
+        """
+
+    return f"""
+    <div class="train-summary" style="margin-top:12px">
+      <h3>{t("train_epoch_summary_header")}</h3>
+      <table class="info-table">
+        <thead>
+          <tr>
+            <th>{t("train_epoch_col_epoch")}</th>
+            <th style="text-align:right">{t("train_epoch_col_steps")}</th>
+            <th style="text-align:right">{t("train_epoch_col_g_loss")}</th>
+            <th style="text-align:right">{t("train_epoch_col_d_loss")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows_html}
+        </tbody>
+      </table>
+    </div>
+    """
+
+
+def _format_loss(val: float | None) -> str:
+    """Format a loss value for display, or return the N/A marker."""
+    if val is None:
+        return f'<span class="muted">{t("ckpt_metrics_na")}</span>'
+    return f"{val:.2f}"
+
+
 def refresh_training():
     summary_html, g_steps, g_series, d_steps, d_series = build_training_summary()
+    # Build epoch summary from the same scalars so we avoid double I/O
+    all_tags = GENERATOR_LOSS_TAGS + DISCRIMINATOR_LOSS_TAGS + ["train/epoch"]
+    scalars_full = _read_tb_scalars(_log_dir, all_tags)
+    epoch_html = _build_epoch_summary_html(scalars_full)
+    combined_html = summary_html + epoch_html
     g_fig = _make_loss_figure(g_steps, g_series, t("train_g_loss_plot"))
     d_fig = _make_loss_figure(d_steps, d_series, t("train_d_loss_plot"))
-    return summary_html, g_fig, d_fig
+    return combined_html, g_fig, d_fig
 
 
 # ── Panel 3: Checkpoint history ───────────────────────────────────────────────
@@ -436,21 +548,53 @@ def _find_latest_checkpoint(base_dir: Path) -> str | None:
     return str(max(candidates, key=lambda p: p.stat().st_mtime))
 
 
-def _read_checkpoint_epoch(path: Path) -> str:
+def _read_checkpoint_meta(path: Path) -> dict:
+    """Load epoch, step, g_loss, d_loss, phase from a checkpoint file.
+
+    Returns a dict with keys: epoch, step, g_loss, d_loss, phase.
+    All values may be None if not found or if torch is unavailable.
+    """
+    meta: dict = {"epoch": None, "step": None, "g_loss": None, "d_loss": None, "phase": None}
     try:
         import torch
         ckpt = torch.load(str(path), map_location="cpu", weights_only=True)
         epoch = ckpt.get("epoch")
         if epoch is not None:
-            return str(int(epoch))
+            meta["epoch"] = int(epoch)
+        step = ckpt.get("step") or ckpt.get("global_step")
+        if step is not None:
+            meta["step"] = int(step)
+        # Loss values stored directly or under a losses sub-dict
+        losses = ckpt.get("losses") or {}
+        g_loss = ckpt.get("g_loss") or losses.get("g_loss")
+        d_loss = ckpt.get("d_loss") or losses.get("d_loss")
+        if g_loss is not None:
+            meta["g_loss"] = float(g_loss)
+        if d_loss is not None:
+            meta["d_loss"] = float(d_loss)
+        meta["phase"] = ckpt.get("phase") or ckpt.get("training_phase")
     except Exception:
         pass
-    # Try to parse epoch number from filename (e.g. checkpoint_0003.pt)
-    stem = path.stem
-    for part in reversed(stem.split("_")):
-        if part.isdigit():
-            return part
-    return t("ckpt_epoch_unknown")
+    # Fall back to parsing epoch from filename (e.g. checkpoint_0003.pt)
+    if meta["epoch"] is None:
+        stem = path.stem
+        for part in reversed(stem.split("_")):
+            if part.isdigit():
+                meta["epoch"] = int(part)
+                break
+    return meta
+
+
+def _checkpoint_drive_path(cp: Path) -> str:
+    """Return the expected Google Drive path for a checkpoint file."""
+    return f"{DEFAULT_GDRIVE_REMOTE}{DEFAULT_GDRIVE_DIR}/checkpoints/{cp.name}"
+
+
+def _format_loss(val: float | None) -> str:
+    """Format a loss value for display, or return the N/A marker."""
+    if val is None:
+        return f'<span class="muted">{t("ckpt_metrics_na")}</span>'
+    return f"{val:.2f}"
 
 
 def build_checkpoint_table() -> str:
@@ -465,6 +609,17 @@ def build_checkpoint_table() -> str:
             f'<p class="note">{t("ckpt_dir")}: {_checkpoint_dir.resolve()}</p>'
         )
 
+    # Check which checkpoints are on Google Drive (non-blocking: use cached drive status)
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["rclone", "lsf", f"{DEFAULT_GDRIVE_REMOTE}{DEFAULT_GDRIVE_DIR}/checkpoints/"],
+            capture_output=True, text=True, timeout=10,
+        )
+        drive_files = set(result.stdout.splitlines()) if result.returncode == 0 else set()
+    except Exception:
+        drive_files = None  # None = check failed, show "…"
+
     rows_html = ""
     for cp in candidates:
         stat = cp.stat()
@@ -477,24 +632,57 @@ def build_checkpoint_table() -> str:
             mod_str = t("train_age_days").format(d=age_s / 86400)
 
         size_str = _human_size(stat.st_size)
-        epoch_str = _read_checkpoint_epoch(cp)
+        meta = _read_checkpoint_meta(cp)
+
+        epoch_str = str(meta["epoch"]) if meta["epoch"] is not None else t("ckpt_epoch_unknown")
+        g_loss_str = _format_loss(meta["g_loss"])
+        d_loss_str = _format_loss(meta["d_loss"])
+
+        step_note = (
+            f'<br><span class="muted" style="font-size:0.8em">'
+            f'{t("ckpt_step")}: {meta["step"]:,}</span>'
+            if meta["step"] is not None
+            else ""
+        )
+        phase_note = (
+            f'<br><span class="muted" style="font-size:0.8em">'
+            f'{t("ckpt_phase")}: {meta["phase"]}</span>'
+            if meta["phase"]
+            else ""
+        )
+
+        # Drive presence indicator
+        if drive_files is None:
+            drive_html = f'<span class="muted">{t("ckpt_drive_checking")}</span>'
+        elif cp.name in drive_files or (cp.name + "/") in drive_files:
+            drive_html = f'<span class="badge-good">{t("ckpt_drive_yes")}</span>'
+        else:
+            drive_html = f'<span class="badge-bad">{t("ckpt_drive_no")}</span>'
+
         rows_html += f"""
         <tr>
-          <td><b>{cp.name}</b></td>
+          <td><b>{cp.name}</b>{phase_note}{step_note}</td>
           <td style="text-align:center">{epoch_str}</td>
+          <td style="text-align:right;font-family:monospace">{g_loss_str}</td>
+          <td style="text-align:right;font-family:monospace">{d_loss_str}</td>
           <td>{mod_str}</td>
           <td style="text-align:right">{size_str}</td>
+          <td style="text-align:center">{drive_html}</td>
         </tr>
         """
 
+    drive_path = f"{DEFAULT_GDRIVE_REMOTE}{DEFAULT_GDRIVE_DIR}/checkpoints/"
     html = f"""
     <table class="info-table">
       <thead>
         <tr>
           <th>{t("ckpt_col_file")}</th>
           <th>{t("ckpt_col_epoch")}</th>
+          <th>{t("ckpt_col_g_loss")}</th>
+          <th>{t("ckpt_col_d_loss")}</th>
           <th>{t("ckpt_col_modified")}</th>
           <th>{t("ckpt_col_size")}</th>
+          <th>{t("ckpt_col_drive")}</th>
         </tr>
       </thead>
       <tbody>
@@ -502,6 +690,7 @@ def build_checkpoint_table() -> str:
       </tbody>
     </table>
     <p class="note">{t("ckpt_dir")}: {_checkpoint_dir.resolve()}</p>
+    <p class="note">{t("ckpt_gdrive_path")}: <code>{drive_path}</code></p>
     """
     return html
 

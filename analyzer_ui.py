@@ -21,7 +21,12 @@ import gradio as gr
 import numpy as np
 import soundfile as sf
 
-from models.constants import INPUT_SAMPLE_RATE
+from models.constants import (
+    INPUT_SAMPLE_RATE,
+    UPSCALE_SCORE_HIGH,
+    UPSCALE_SCORE_MEDIUM,
+    UPSCALE_SCORE_LOW,
+)
 
 
 # ── Localization ──────────────────────────────────────────────────────────────

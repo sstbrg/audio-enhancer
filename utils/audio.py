@@ -1,5 +1,6 @@
 """Audio I/O and processing utilities."""
 
+import functools
 import numpy as np
 import soundfile as sf
 import torch
@@ -47,11 +48,15 @@ def save_audio(path: str, waveform: torch.Tensor, sample_rate: int,
     sf.write(str(path), data, sample_rate, subtype=subtype)
 
 
-def resample_audio(waveform: torch.Tensor, orig_sr: int, target_sr: int) -> torch.Tensor:
-    """High-quality resampling using Kaiser window."""
-    if orig_sr == target_sr:
-        return waveform
-    resampler = torchaudio.transforms.Resample(
+@functools.lru_cache(maxsize=32)
+def _get_resampler(orig_sr: int, target_sr: int) -> torchaudio.transforms.Resample:
+    """Return a cached Resample transform for the given rate pair.
+
+    Computing the Kaiser window filter kernel is expensive (~10ms per call).
+    Caching eliminates that overhead for the fixed rate pairs used in training
+    (e.g. 96000→48000, 48000→44100, 44100→48000).
+    """
+    return torchaudio.transforms.Resample(
         orig_freq=orig_sr,
         new_freq=target_sr,
         lowpass_filter_width=64,
@@ -59,7 +64,17 @@ def resample_audio(waveform: torch.Tensor, orig_sr: int, target_sr: int) -> torc
         resampling_method="sinc_interp_kaiser",
         beta=14.769656459379492,
     )
-    return resampler(waveform)
+
+
+def resample_audio(waveform: torch.Tensor, orig_sr: int, target_sr: int) -> torch.Tensor:
+    """High-quality resampling using Kaiser window.
+
+    The underlying Resample transform is cached by (orig_sr, target_sr) so
+    the filter kernel is only computed once per rate pair per process.
+    """
+    if orig_sr == target_sr:
+        return waveform
+    return _get_resampler(orig_sr, target_sr)(waveform)
 
 
 def get_audio_info(path: str) -> dict:

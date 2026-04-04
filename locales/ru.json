@@ -252,5 +252,32 @@
   "infra_total_spend": "Итого потрачено",
   "infra_instance_id": "ID инстанса",
   "infra_location": "Локация",
-  "infra_image": "Образ"
+  "infra_image": "Образ",
+
+  "ckpt_col_g_loss": "G Лосс",
+  "ckpt_col_d_loss": "D Лосс",
+  "ckpt_col_drive": "На Drive",
+  "ckpt_metrics_na": "—",
+  "ckpt_drive_yes": "да",
+  "ckpt_drive_no": "нет",
+  "ckpt_drive_checking": "…",
+  "ckpt_phase": "Фаза",
+  "ckpt_step": "Шаг",
+  "ckpt_metrics_header": "Сохранённые метрики",
+  "ckpt_gdrive_path": "Путь на Google Drive",
+
+  "train_epoch_summary_header": "Сводка по эпохам",
+  "train_epoch_col_epoch": "Эпоха",
+  "train_epoch_col_steps": "Шаги",
+  "train_epoch_col_g_loss": "G Лосс (ср.)",
+  "train_epoch_col_d_loss": "D Лосс (ср.)",
+  "train_epoch_no_data": "Данные по эпохам пока недоступны.",
+
+  "infra_cost_summary_header": "Оценка стоимости обучения",
+  "infra_cost_phase": "Фаза",
+  "infra_cost_epochs_done": "Завершённые эпохи",
+  "infra_cost_current_run": "Стоимость текущего запуска",
+  "infra_cost_no_instance": "Нет активного инстанса — данные о стоимости недоступны.",
+  "infra_cost_rate": "Тариф",
+  "infra_cost_elapsed": "Время работы (текущий запуск)"
 }

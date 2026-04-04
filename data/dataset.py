@@ -19,6 +19,7 @@ CD-quality degradation (optional, configured via ``degradation`` in training con
   learns to recover the lost information.
 """
 
+import glob
 import random
 from pathlib import Path
 
@@ -151,7 +152,6 @@ class AudioSRDataset(Dataset):
         self.degradation_dither_amplitude = degradation_dither_amplitude
 
         # Find all audio files (follow symlinks)
-        import glob
         self.files = []
         for ext in extensions:
             self.files.extend(

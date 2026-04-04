@@ -252,5 +252,32 @@
   "infra_total_spend": "Total spend",
   "infra_instance_id": "Instance ID",
   "infra_location": "Location",
-  "infra_image": "Image"
+  "infra_image": "Image",
+
+  "ckpt_col_g_loss": "G Loss",
+  "ckpt_col_d_loss": "D Loss",
+  "ckpt_col_drive": "On Drive",
+  "ckpt_metrics_na": "—",
+  "ckpt_drive_yes": "yes",
+  "ckpt_drive_no": "no",
+  "ckpt_drive_checking": "…",
+  "ckpt_phase": "Phase",
+  "ckpt_step": "Step",
+  "ckpt_metrics_header": "Saved Metrics",
+  "ckpt_gdrive_path": "Google Drive path",
+
+  "train_epoch_summary_header": "Epoch Summary",
+  "train_epoch_col_epoch": "Epoch",
+  "train_epoch_col_steps": "Steps",
+  "train_epoch_col_g_loss": "G Loss (avg)",
+  "train_epoch_col_d_loss": "D Loss (avg)",
+  "train_epoch_no_data": "No per-epoch data available yet.",
+
+  "infra_cost_summary_header": "Training Cost Estimate",
+  "infra_cost_phase": "Phase",
+  "infra_cost_epochs_done": "Epochs completed",
+  "infra_cost_current_run": "Current run cost",
+  "infra_cost_no_instance": "No running instance — cost data unavailable.",
+  "infra_cost_rate": "Rate",
+  "infra_cost_elapsed": "Elapsed (this run)"
 }
