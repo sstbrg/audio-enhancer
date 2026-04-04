@@ -36,7 +36,7 @@ def init_db() -> None:
         );
 
         CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER PRIMARY KEY,
             description TEXT NOT NULL,
             assigned_to TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
@@ -48,7 +48,7 @@ def init_db() -> None:
         );
 
         CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER PRIMARY KEY,
             from_agent TEXT NOT NULL,
             to_agent TEXT NOT NULL,
             summary TEXT,
@@ -57,7 +57,7 @@ def init_db() -> None:
         );
 
         CREATE TABLE IF NOT EXISTS pipeline_steps (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER PRIMARY KEY,
             pipeline_name TEXT NOT NULL,
             step_order INTEGER NOT NULL,
             task_id INTEGER NOT NULL,
