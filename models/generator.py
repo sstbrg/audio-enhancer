@@ -139,6 +139,12 @@ class Generator(nn.Module):
             total_upsample *= r
         self.upsample_factor = total_upsample
 
+        assert len(self.resblocks) % self.num_upsamples == 0, (
+            f"Number of resblocks ({len(self.resblocks)}) must be evenly divisible "
+            f"by num_upsamples ({self.num_upsamples}). Got "
+            f"{len(resblock_kernel_sizes)} resblock kernels × {self.num_upsamples} "
+            f"upsample stages = {len(self.resblocks)} resblocks total."
+        )
         self.n_resblocks = len(self.resblocks) // self.num_upsamples
 
         self.apply(init_weights)
