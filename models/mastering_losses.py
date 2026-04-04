@@ -71,7 +71,10 @@ class PerceptualSTFTLoss(nn.Module):
             y = y.unsqueeze(1)
             y_hat = y_hat.unsqueeze(1)
         if self.loss_fn is not None:
-            return self.loss_fn(y_hat, y)
+            # auraloss calls torch.stft internally, which does not support
+            # float16.  Disable autocast and cast inputs to float32.
+            with torch.autocast("cuda", enabled=False):
+                return self.loss_fn(y_hat.float(), y.float())
         # Fallback: basic spectral convergence
         return F.l1_loss(y_hat, y)
 
@@ -109,9 +112,10 @@ class StereoImageLoss(nn.Module):
 
         loss = torch.tensor(0.0, device=y.device)
 
-        # Mid/side STFT loss
+        # Mid/side STFT loss — auraloss uses torch.stft, not safe in float16.
         if self.ms_loss is not None:
-            loss = loss + self.ms_loss(y_hat, y)
+            with torch.autocast("cuda", enabled=False):
+                loss = loss + self.ms_loss(y_hat.float(), y.float())
 
         # Stereo width ratio loss
         loss = loss + self._stereo_width_loss(y_hat, y)
@@ -167,8 +171,12 @@ class DynamicRangeLoss(nn.Module):
         if y.shape[-1] < self.frame_size:
             return torch.tensor(0.0, device=y.device)
 
-        y_hat_frames = y_hat.unfold(-1, self.frame_size, self.hop_size)
-        y_frames = y.unfold(-1, self.frame_size, self.hop_size)
+        # logsumexp with temperature=20 overflows in float16 — cast to float32.
+        y_hat_f = y_hat.float()
+        y_f = y.float()
+
+        y_hat_frames = y_hat_f.unfold(-1, self.frame_size, self.hop_size)
+        y_frames = y_f.unfold(-1, self.frame_size, self.hop_size)
 
         # Use logsumexp as a smooth differentiable approximation to max
         temperature = 20.0
@@ -186,12 +194,17 @@ class DynamicRangeLoss(nn.Module):
         """LUFS-approximation matching using K-weighting via biquad filters."""
         import torchaudio.functional as AF
 
+        # highpass_biquad can produce denormals / inf in float16, and log10 of
+        # those overflows to NaN.  Run entirely in float32.
+        y_f = y.float()
+        y_hat_f = y_hat.float()
+
         try:
-            y_k = AF.highpass_biquad(y, sample_rate=self.sample_rate, cutoff_freq=60.0)
-            y_hat_k = AF.highpass_biquad(y_hat, sample_rate=self.sample_rate, cutoff_freq=60.0)
+            y_k = AF.highpass_biquad(y_f, sample_rate=self.sample_rate, cutoff_freq=60.0)
+            y_hat_k = AF.highpass_biquad(y_hat_f, sample_rate=self.sample_rate, cutoff_freq=60.0)
         except Exception:
-            y_k = y
-            y_hat_k = y_hat
+            y_k = y_f
+            y_hat_k = y_hat_f
 
         rms_hat = (y_hat_k ** 2).mean(dim=-1).sqrt()
         rms_ref = (y_k ** 2).mean(dim=-1).sqrt()
@@ -451,29 +464,37 @@ class MasteringLoss(nn.Module):
         losses = {}
         total = torch.tensor(0.0, device=y.device)
 
+        def _safe_add(name: str, term: torch.Tensor, weight: float) -> torch.Tensor:
+            """Accumulate a weighted loss term, skipping NaN/inf components."""
+            val = term.item()
+            if not math.isfinite(val):
+                warnings.warn(
+                    f"MasteringLoss: '{name}' produced non-finite value {val}, skipping",
+                    RuntimeWarning,
+                )
+                return total  # return unchanged accumulator
+            losses[name] = val
+            return total + weight * term
+
         # Perceptual STFT (mel-scaled, A-weighted)
         if self.weights["perceptual_stft"] > 0:
             l = self.perceptual_stft(y_hat, y)
-            losses["perceptual_stft"] = l.item()
-            total = total + self.weights["perceptual_stft"] * l
+            total = _safe_add("perceptual_stft", l, self.weights["perceptual_stft"])
 
         # Stereo image (only for multi-channel)
         if self.weights["stereo"] > 0 and y.shape[1] >= 2:
             l = self.stereo_image(y_hat, y)
-            losses["stereo"] = l.item()
-            total = total + self.weights["stereo"] * l
+            total = _safe_add("stereo", l, self.weights["stereo"])
 
         # Dynamic range
         if self.weights["dynamics"] > 0:
             l = self.dynamics(y_hat, y)
-            losses["dynamics"] = l.item()
-            total = total + self.weights["dynamics"] * l
+            total = _safe_add("dynamics", l, self.weights["dynamics"])
 
         # EnCodec embedding
         if self.weights["encodec"] > 0:
             l = self.encodec_emb(y_hat, y, input_sr=self.sample_rate)
-            losses["encodec"] = l.item()
-            total = total + self.weights["encodec"] * l
+            total = _safe_add("encodec", l, self.weights["encodec"])
 
         # Audiobox PQ (no-reference, experimental)
         if self.audiobox_pq is not None and self.weights["audiobox_pq"] > 0:
