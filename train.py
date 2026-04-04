@@ -15,6 +15,8 @@ The training process:
 
 import argparse
 import os
+import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -63,6 +65,47 @@ def _unwrap_state_dict(model: torch.nn.Module) -> dict:
     """
     raw = getattr(model, "_orig_mod", model)
     return raw.state_dict()
+
+
+# rclone remote path for automatic checkpoint uploads to Google Drive.
+# Used by _upload_checkpoints_to_drive() for fire-and-forget background copies.
+GDRIVE_CHECKPOINT_REMOTE = "gdrive:audio-enhancer-datasets/checkpoints/"
+
+
+def _check_rclone_available() -> bool:
+    """Check if rclone is installed and log a warning if not."""
+    if shutil.which("rclone") is None:
+        print(
+            "[WARNING] rclone not found on PATH. "
+            "Checkpoints will NOT be uploaded to Google Drive automatically. "
+            "Install rclone to enable auto-upload."
+        )
+        return False
+    print("rclone found — checkpoints will be uploaded to Google Drive after each save.")
+    return True
+
+
+def _upload_checkpoints_to_drive(checkpoint_dir: Path) -> None:
+    """Fire-and-forget background upload of checkpoints to Google Drive.
+
+    Launches ``rclone copy`` as a non-blocking subprocess so training is
+    never paused waiting for the upload to finish.  If rclone is not on
+    PATH the call is silently skipped.
+    """
+    if shutil.which("rclone") is None:
+        return
+    try:
+        subprocess.Popen(
+            [
+                "rclone", "copy", str(checkpoint_dir),
+                GDRIVE_CHECKPOINT_REMOTE,
+                "--include", "*.pt",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        print(f"[WARNING] Failed to launch rclone upload: {exc}")
 
 
 @torch.no_grad()
@@ -393,6 +436,9 @@ def train(args):
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(log_dir=str(ckpt_dir / "logs"))
 
+    # Check if rclone is available for auto-uploading checkpoints to Drive
+    _check_rclone_available()
+
     global_step = start_epoch * len(loader)
     train_start = time.time()
     max_seconds = args.max_hours * 3600 if args.max_hours else float("inf")
@@ -568,6 +614,7 @@ def train(args):
             torch.save(ckpt_data, ckpt_dir / "latest.pt")
 
             print(f"\nSaved checkpoint: {ckpt_path}")
+            _upload_checkpoints_to_drive(ckpt_dir)
 
     # Save final checkpoint
     elapsed = time.time() - train_start
@@ -587,6 +634,7 @@ def train(args):
         "config": config,
     }, ckpt_dir / "latest.pt")
     print(f"\nSaved final checkpoint (epoch {final_epoch})")
+    _upload_checkpoints_to_drive(ckpt_dir)
 
     writer.close()
     print(f"Training complete! Total time: {elapsed / 3600:.1f}h")
