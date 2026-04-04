@@ -2,7 +2,9 @@
 """Multi-session agent launcher for the audio-enhancer project.
 
 Launches multiple Claude Code sessions, each acting as a specific agent from the
-team roster. Agents coordinate via the agent tracker MCP.
+team roster. Agents are fully autonomous — they read CLAUDE.md, check the project
+roadmap, see what others are working on, and self-assign work. Coordination
+happens through the agent tracker MCP database.
 
 Two modes:
   - VS Code (primary): generates .vscode/tasks.json with terminal tasks and
@@ -15,10 +17,10 @@ Usage:
     python infra/launch_agents.py launch adam kyle jack      -- launch specific agents
     python infra/launch_agents.py launch --mode tmux        -- force tmux mode
     python infra/launch_agents.py launch --mode vscode      -- force VS Code mode
-    python infra/launch_agents.py launch --task "review train.py" adam kyle
+    python infra/launch_agents.py launch --directive "focus on Phase 1" adam kyle
     python infra/launch_agents.py status                    -- show agent status
     python infra/launch_agents.py stop                      -- kill tmux session
-    python infra/launch_agents.py send adam "fix the loss"  -- send task to agent
+    python infra/launch_agents.py send adam "fix the loss"  -- send message to agent
     python infra/launch_agents.py logs                      -- show tracker dashboard
     python infra/launch_agents.py list                      -- list available agents
 """
@@ -218,52 +220,72 @@ def resolve_agent_names(requested: list[str], all_agents: dict[str, AgentDef]) -
 # ── Environment detection ────────────────────────────────────────────────────
 
 def detect_mode() -> str:
-    """Detect whether we are running inside VS Code or a terminal.
+    """Detect launch mode.
 
-    Returns 'vscode' if VS Code environment variables are detected,
-    'tmux' otherwise.
+    Defaults to tmux — it actually launches agents directly. VS Code mode
+    only generates tasks.json config (requires manual clicks to start).
+    Use --mode vscode explicitly if you want that.
     """
-    vscode_indicators = [
-        os.environ.get("VSCODE_PID"),
-        os.environ.get("VSCODE_CWD"),
-        os.environ.get("VSCODE_IPC_HOOK"),
-        os.environ.get("TERM_PROGRAM") == "vscode",
-        os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "claude-vscode",
-    ]
-    if any(vscode_indicators):
-        return "vscode"
     return "tmux"
 
 
 # ── Bootstrap prompt ─────────────────────────────────────────────────────────
 
-def build_bootstrap_prompt(agent: AgentDef, task: str | None = None) -> str:
-    """Build the initial bootstrap prompt for an agent.
+def build_bootstrap_prompt(agent: AgentDef, directive: str | None = None) -> str:
+    """Build the autonomous bootstrap prompt for an agent.
 
-    This prompt instructs the agent to register with the tracker, check for
-    tasks, and begin working.
+    Agents are self-directed: they read the project state, check what others
+    are doing, and decide what to work on based on their domain expertise.
+    The agent tracker MCP is the coordination layer between all agents.
     """
     parts = [
         f"You are {agent.human_name}. You have just been launched as part of the "
-        f"multi-agent team for the audio-enhancer project.",
+        f"autonomous multi-agent team for the audio-enhancer project.",
         "",
-        "Your first actions MUST be:",
+        "## Startup sequence",
+        "",
         "1. Register with the agent tracker MCP (agent_register)",
         "2. Set your status to 'working' (agent_update)",
-        "3. Check for unread messages (message_unread)",
-        "4. Check for assigned tasks (task_list)",
-        "5. If you have tasks, work on them. If not, announce you are ready "
-        "and set status to 'idle'.",
+        "3. Check for unread messages (message_unread) — act on any pending requests first",
+        "4. Check for assigned tasks (task_list) — finish existing tasks before picking new work",
+        "",
+        "## Self-directed work",
+        "",
+        "If you have no pending messages or assigned tasks, you are NOT idle — you are a "
+        "self-directed member of a startup team. Figure out what needs doing:",
+        "",
+        "5. Read CLAUDE.md — it has the project roadmap, current status, and next steps",
+        "6. Check the agent tracker dashboard (agent_dashboard) — see what other agents "
+        "are already working on so you don't duplicate effort",
+        "7. Check recent git log to understand what was done recently",
+        "8. Based on YOUR domain expertise and the project's needs, identify the highest-impact "
+        "work you can do right now",
+        "9. Create a task for yourself (task_create) describing what you'll do",
+        "10. Announce your plan via message_log so the team knows",
+        "11. Do the work. Commit to the develop branch when done.",
+        "",
+        "## Coordination",
+        "",
+        "- If you need something from another agent, send them a message (message_log)",
+        "- If you find a bug or issue outside your domain, create a task and assign it "
+        "to the right person",
+        "- When you finish a task, check for new messages and pick up the next most "
+        "impactful thing — don't wait to be told",
+        "- Only go idle if you have genuinely exhausted all useful work in your domain "
+        "AND verified via message_history and task_list that nothing is pending",
         "",
         "The project directory is /home/stas/audio-enhancer. "
         "Always work on the develop branch.",
     ]
 
-    if task:
+    if directive:
         parts.extend([
             "",
-            f"You have been given this task: {task}",
-            "Start working on it immediately after registering.",
+            "## Team directive from the founder",
+            "",
+            f"{directive}",
+            "",
+            "This directive takes priority. Align your self-directed work with it.",
         ])
 
     return "\n".join(parts)
@@ -271,7 +293,7 @@ def build_bootstrap_prompt(agent: AgentDef, task: str | None = None) -> str:
 
 # ── VS Code mode ────────────────────────────────────────────────────────────
 
-def build_vscode_tasks(agents: list[AgentDef], task: str | None = None) -> dict:
+def build_vscode_tasks(agents: list[AgentDef], directive: str | None = None) -> dict:
     """Build a VS Code tasks.json structure with one task per agent,
     plus compound tasks for agent groups.
 
@@ -281,11 +303,7 @@ def build_vscode_tasks(agents: list[AgentDef], task: str | None = None) -> dict:
     tasks_list: list[dict] = []
 
     for agent in agents:
-        prompt = build_bootstrap_prompt(agent, task)
-        # Escape the prompt for shell argument passing
-        # We write it to a temp approach -- actually simpler to just pass
-        # the --agent flag and let the user interact. The bootstrap prompt
-        # can be sent as the initial message via --append-system-prompt.
+        prompt = build_bootstrap_prompt(agent, directive)
         agent_task: dict = {
             "label": agent.task_label,
             "type": "shell",
@@ -379,7 +397,7 @@ def write_vscode_tasks(tasks_json_data: dict) -> Path:
     return TASKS_JSON
 
 
-def launch_vscode(agents: list[AgentDef], task: str | None = None) -> None:
+def launch_vscode(agents: list[AgentDef], directive: str | None = None) -> None:
     """Launch agents in VS Code terminals via tasks.json.
 
     Generates .vscode/tasks.json with per-agent terminal tasks, then instructs
@@ -389,7 +407,7 @@ def launch_vscode(agents: list[AgentDef], task: str | None = None) -> None:
     print(f"Generating VS Code tasks for {len(agents)} agent(s)...")
     print()
 
-    tasks_data = build_vscode_tasks(agents, task)
+    tasks_data = build_vscode_tasks(agents, directive)
     tasks_path = write_vscode_tasks(tasks_data)
 
     for agent in agents:
@@ -460,14 +478,17 @@ def kill_tmux_session() -> bool:
     return True
 
 
-def launch_tmux(agents: list[AgentDef], task: str | None = None,
+def launch_tmux(agents: list[AgentDef], directive: str | None = None,
                 layout: str = "tiled") -> None:
-    """Launch agents in a tmux session with one pane per agent.
+    """Launch agents in a tmux session with one window per agent.
+
+    Each agent gets a full-screen tmux window (tab) so you can monitor them
+    individually. Switch between agents with Ctrl+B + n/p or Ctrl+B + <number>.
 
     Args:
         agents: List of agent definitions to launch.
-        task: Optional task to assign to all agents at launch.
-        layout: tmux layout (tiled, even-horizontal, even-vertical, etc.).
+        directive: Optional high-level directive to steer agents' autonomous work.
+        layout: Unused, kept for CLI compat.
     """
     check_tmux()
 
@@ -483,10 +504,10 @@ def launch_tmux(agents: list[AgentDef], task: str | None = None,
     print(f"Launching {len(agents)} agent(s) in tmux session '{TMUX_SESSION}'...")
     print()
 
-    # Create session with first agent
+    # Create session with first agent as window 0
     first = agents[0]
-    first_cmd = _build_tmux_agent_cmd(first, task)
-    print(f"  [{first.human_name:>10}] {first.file_stem} ({first.model})")
+    first_cmd = _build_tmux_agent_cmd(first, directive)
+    print(f"  [0]  {first.human_name:<12} {first.file_stem} ({first.model})")
 
     subprocess.run([
         "tmux", "new-session",
@@ -495,80 +516,64 @@ def launch_tmux(agents: list[AgentDef], task: str | None = None,
         "-x", "220", "-y", "50",
     ], check=True)
 
-    first_pane = f"{TMUX_SESSION}:0.0"
     subprocess.run([
-        "tmux", "send-keys", "-t", first_pane,
+        "tmux", "send-keys", "-t", f"{TMUX_SESSION}:0",
         f"cd {PROJECT_DIR} && {first_cmd}", "Enter",
     ], check=True)
-    subprocess.run([
-        "tmux", "select-pane", "-t", first_pane, "-T", first.human_name,
-    ], check=True)
 
-    # Create panes for remaining agents
-    for agent in agents[1:]:
-        cmd = _build_tmux_agent_cmd(agent, task)
-        print(f"  [{agent.human_name:>10}] {agent.file_stem} ({agent.model})")
+    # Create a new window for each remaining agent
+    for i, agent in enumerate(agents[1:], 1):
+        cmd = _build_tmux_agent_cmd(agent, directive)
+        print(f"  [{i}]  {agent.human_name:<12} {agent.file_stem} ({agent.model})")
 
         subprocess.run([
-            "tmux", "split-window", "-t", f"{TMUX_SESSION}:0", "-h",
+            "tmux", "new-window", "-t", TMUX_SESSION,
+            "-n", agent.human_name,
         ], check=True)
 
-        result = subprocess.run(
-            ["tmux", "display-message", "-t", f"{TMUX_SESSION}:0", "-p", "#{pane_index}"],
-            capture_output=True, text=True,
-        )
-        pane_idx = result.stdout.strip()
-        pane_target = f"{TMUX_SESSION}:0.{pane_idx}"
-
         subprocess.run([
-            "tmux", "select-pane", "-t", pane_target, "-T", agent.human_name,
-        ], check=True)
-        subprocess.run([
-            "tmux", "send-keys", "-t", pane_target,
+            "tmux", "send-keys", "-t", f"{TMUX_SESSION}:{i}",
             f"cd {PROJECT_DIR} && {cmd}", "Enter",
         ], check=True)
-        subprocess.run([
-            "tmux", "select-layout", "-t", f"{TMUX_SESSION}:0", layout,
-        ], check=True)
 
-    # Final layout and pane border config
+    # Select window 0 (Jason or first agent)
     subprocess.run([
-        "tmux", "select-layout", "-t", f"{TMUX_SESSION}:0", layout,
+        "tmux", "select-window", "-t", f"{TMUX_SESSION}:0",
     ], check=True)
+
+    # Show window names in status bar
     subprocess.run([
-        "tmux", "set-option", "-t", TMUX_SESSION, "pane-border-status", "top",
-    ], check=True)
-    subprocess.run([
-        "tmux", "set-option", "-t", TMUX_SESSION, "pane-border-format", " #{pane_title} ",
+        "tmux", "set-option", "-t", TMUX_SESSION,
+        "status-left-length", "30",
     ], check=True)
 
     print()
     print(f"All {len(agents)} agents launched in tmux session '{TMUX_SESSION}'.")
     print()
-    print("To attach:  tmux attach -t agents")
-    print("To status:  python infra/launch_agents.py status")
-    print("To stop:    python infra/launch_agents.py stop")
+    print("  tmux attach -t agents")
     print()
-    print("Navigation inside tmux:")
-    print("  Ctrl+B then arrow keys  -- switch between panes")
-    print("  Ctrl+B then z           -- zoom/unzoom current pane")
-    print("  Ctrl+B then q           -- show pane numbers")
-    print("  Ctrl+B then d           -- detach from session")
+    print("Navigation:")
+    print("  Ctrl+B n/p    -- next/prev agent")
+    print("  Ctrl+B <num>  -- jump to agent by window number")
+    print("  Ctrl+B w      -- list all agent windows")
+    print("  Ctrl+B d      -- detach (agents keep running)")
 
 
-def _build_tmux_agent_cmd(agent: AgentDef, task: str | None = None) -> str:
-    """Build the claude CLI command string for a tmux pane."""
+def _build_tmux_agent_cmd(agent: AgentDef, directive: str | None = None) -> str:
+    """Build the claude CLI command string for a tmux window.
+
+    The bootstrap prompt is passed as the initial user message (positional arg)
+    so the agent starts working immediately without waiting for input.
+    """
+    prompt = build_bootstrap_prompt(agent, directive)
+    escaped = prompt.replace("'", "'\\''")
     cmd_parts = [
         "claude",
         f"--agent {agent.name}",
         f"--name '{agent.human_name}'",
+        "--dangerously-skip-permissions",
+        f"'{escaped}'",
     ]
-    if task:
-        prompt = build_bootstrap_prompt(agent, task)
-        # Escape single quotes in the prompt for shell
-        escaped = prompt.replace("'", "'\\''")
-        cmd_parts.append(f"--append-system-prompt '{escaped}'")
-
     return " ".join(cmd_parts)
 
 
@@ -805,10 +810,10 @@ def main() -> None:
               %(prog)s launch ai-team               launch an agent group
               %(prog)s launch --mode tmux            force tmux mode
               %(prog)s launch --mode vscode          force VS Code mode
-              %(prog)s launch --task "review train.py" adam kyle
+              %(prog)s launch --directive "focus on Phase 1"  steer all agents
               %(prog)s status                       show agent status
               %(prog)s stop                         kill tmux session
-              %(prog)s send adam "fix the loss"      send a task to an agent
+              %(prog)s send adam "check the losses"  send message to an agent
               %(prog)s logs                         show tracker dashboard
               %(prog)s list                         list agents and groups
         """),
@@ -835,8 +840,9 @@ def main() -> None:
         help="Override launch mode (overrides top-level --mode).",
     )
     launch_parser.add_argument(
-        "--task", "-t", type=str, default=None,
-        help="Initial task to assign to all launched agents.",
+        "--directive", "-d", type=str, default=None,
+        help="Optional high-level directive from the founder to steer all agents' "
+             "self-directed work (e.g. 'focus on Phase 1 degradation pipeline').",
     )
     launch_parser.add_argument(
         "--layout", "-l", type=str, default="tiled",
@@ -853,10 +859,10 @@ def main() -> None:
 
     # send
     send_parser = subparsers.add_parser(
-        "send", help="Send a message/task to a specific agent",
+        "send", help="Send a message to a running agent via the tracker",
     )
     send_parser.add_argument("agent", help="Agent name (human name or slug)")
-    send_parser.add_argument("message", help="Message or task description")
+    send_parser.add_argument("message", help="Message to send (agent will pick it up via MCP)")
 
     # logs
     subparsers.add_parser("logs", help="Show agent tracker messages and tasks")
@@ -875,7 +881,7 @@ def main() -> None:
     if args.command is None:
         args.command = "launch"
         args.agents = []
-        args.task = None
+        args.directive = None
         args.layout = "tiled"
 
     if args.command == "launch":
@@ -890,9 +896,9 @@ def main() -> None:
         print()
 
         if mode == "vscode":
-            launch_vscode(agents_to_launch, task=args.task)
+            launch_vscode(agents_to_launch, directive=args.directive)
         elif mode == "tmux":
-            launch_tmux(agents_to_launch, task=args.task, layout=args.layout)
+            launch_tmux(agents_to_launch, directive=args.directive, layout=args.layout)
         else:
             # Should not happen after auto-detection
             print(f"Unknown mode: {mode}", file=sys.stderr)
