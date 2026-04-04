@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Training and dataset monitoring dashboard.
 
-Read-only Gradio dashboard with four panels:
+Read-only Gradio dashboard with five panels:
   - Datasets       : local disk vs Google Drive status for all catalog entries
   - Training       : TensorBoard loss curves, step/epoch info
   - Checkpoints    : list of saved checkpoint files with epoch, timestamp, size
   - Infrastructure : Live Vast.ai instance status (GPU util, VRAM, cost, uptime)
                      + Google Drive reachability
+  - Agent Team     : Live agent states, task summary, and recent messages from
+                     the agent tracker SQLite DB
 
 Vast.ai API key is read from (in order):
   1. VAST_API_KEY environment variable
@@ -135,6 +137,21 @@ DASHBOARD_CSS = """
 
 /* Footer note */
 .note { color: #888; font-size: 0.82em; margin-top: 6px; }
+
+/* Agent team status */
+.agent-table { font-family: 'Segoe UI', monospace; width: 100%;
+               border-collapse: collapse; margin-bottom: 10px; }
+.agent-table th { color: #0088cc; text-align: left; padding: 6px 10px;
+                  border-bottom: 1px solid #333; }
+.agent-table td { padding: 5px 10px; vertical-align: top; }
+.agent-table tr:nth-child(even) td { background: rgba(255,255,255,0.03); }
+.agent-role { color: #888; font-size: 0.8em; }
+.msg-summary { max-width: 600px; overflow: hidden; text-overflow: ellipsis;
+               white-space: nowrap; font-size: 0.85em; }
+.task-counts { display: flex; gap: 16px; margin: 8px 0 12px; }
+.task-count-box { padding: 6px 14px; border-radius: 6px; text-align: center; }
+.task-count-box .count { font-size: 1.5em; font-weight: bold; display: block; }
+.task-count-box .label { font-size: 0.75em; color: #aaa; }
 """
 
 # ── Import infra/datasets.py ──────────────────────────────────────────────────
@@ -418,13 +435,6 @@ def _make_loss_figure(steps: list, series: list[tuple[str, list]], title: str):
     return fig
 
 
-def _format_loss(val: float | None) -> str:
-    """Format a loss value for display, or return the N/A marker."""
-    if val is None:
-        return f'<span class="muted">{t("ckpt_metrics_na")}</span>'
-    return f"{val:.2f}"
-
-
 def _build_epoch_summary_html(scalars: dict) -> str:
     """Build an HTML table summarising per-epoch average loss values.
 
@@ -516,13 +526,6 @@ def _build_epoch_summary_html(scalars: dict) -> str:
       </table>
     </div>
     """
-
-
-def _format_loss(val: float | None) -> str:
-    """Format a loss value for display, or return the N/A marker."""
-    if val is None:
-        return f'<span class="muted">{t("ckpt_metrics_na")}</span>'
-    return f"{val:.2f}"
 
 
 def refresh_training():
@@ -1071,6 +1074,301 @@ def refresh_infra() -> str:
         return f'<p class="badge-bad">Error: {e}</p>'
 
 
+# ── Panel 5: Agent Team Status ────────────────────────────────────────────────
+
+# Default path to the agent tracker SQLite database
+_AGENT_DB_DEFAULT = _REPO_ROOT / ".claude" / "mcp" / "agent_tracker" / "agent_tracker.db"
+
+# Cache TTL for agent team status (seconds)
+AGENTS_CACHE_TTL_S = 15
+
+# Maximum recent messages shown
+AGENTS_MSG_LIMIT = 20
+
+# Max characters of message summary shown in table
+AGENTS_MSG_PREVIEW_CHARS = 120
+
+_agents_cache: dict = {"html": '<p class="muted">loading…</p>', "ts": 0.0}
+_agents_lock = _threading.Lock()
+_agents_checking = False
+
+
+def _agent_status_badge(status: str) -> str:
+    s = (status or "").lower()
+    if s == "working":
+        return f'<span class="badge-good">{s}</span>'
+    if s == "idle":
+        return f'<span class="muted">{s}</span>'
+    if s in ("blocked", "error"):
+        return f'<span class="badge-bad">{s}</span>'
+    return f'<span class="badge-info">{s or "unknown"}</span>'
+
+
+def _task_status_badge(status: str) -> str:
+    s = (status or "").lower()
+    if s == "done":
+        return f'<span class="badge-good">{s}</span>'
+    if s == "in_progress":
+        return f'<span class="badge-ok">in progress</span>'
+    if s == "pending":
+        return f'<span class="muted">{s}</span>'
+    return f'<span class="badge-info">{s or "unknown"}</span>'
+
+
+def _time_ago(ts_str: str) -> str:
+    """Convert ISO timestamp string to a human-readable 'X ago' string."""
+    try:
+        import datetime
+        ts = datetime.datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        age_s = (now - ts).total_seconds()
+        if age_s < 60:
+            return f"{int(age_s)}s ago"
+        if age_s < 3600:
+            return f"{int(age_s // 60)}m ago"
+        if age_s < 86400:
+            return f"{age_s / 3600:.1f}h ago"
+        return f"{age_s / 86400:.1f}d ago"
+    except Exception:
+        return ts_str or ""
+
+
+def _build_agents_html_from_db() -> str:
+    import sqlite3
+
+    db_path = _AGENT_DB_DEFAULT
+    if not db_path.exists():
+        return (
+            f'<p class="badge-bad">{t("agents_db_not_found")}</p>'
+            f'<p class="note">{t("agents_db_path")}: <code>{db_path}</code></p>'
+        )
+
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=5)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        # ── Agents ──────────────────────────────────────────────────────────────
+        cur.execute(
+            "SELECT name, role, status, current_task, turns_used, max_turns,"
+            "       last_activity_at"
+            "  FROM agents"
+            " ORDER BY CASE status WHEN 'working' THEN 0 ELSE 1 END, last_activity_at DESC"
+        )
+        agents = cur.fetchall()
+
+        # ── Tasks ────────────────────────────────────────────────────────────────
+        cur.execute("SELECT status, COUNT(*) AS cnt FROM tasks GROUP BY status")
+        task_counts: dict[str, int] = {r["status"]: r["cnt"] for r in cur.fetchall()}
+        pending_cnt    = task_counts.get("pending", 0)
+        in_progress_cnt = task_counts.get("in_progress", 0)
+        done_cnt       = task_counts.get("done", 0)
+
+        cur.execute(
+            "SELECT id, description, assigned_to, status FROM tasks"
+            " WHERE status = 'in_progress'"
+            " ORDER BY id"
+        )
+        active_tasks = cur.fetchall()
+
+        # ── Messages ─────────────────────────────────────────────────────────────
+        cur.execute(
+            "SELECT from_agent, to_agent, summary, timestamp FROM messages"
+            " ORDER BY timestamp DESC LIMIT ?",
+            (AGENTS_MSG_LIMIT,),
+        )
+        messages = cur.fetchall()
+        conn.close()
+    except Exception as exc:
+        return f'<p class="badge-bad">DB error: {exc}</p>'
+
+    # ── Build agents table HTML ──────────────────────────────────────────────────
+    if not agents:
+        agents_rows_html = f'<tr><td colspan="5" class="muted">{t("agents_no_agents")}</td></tr>'
+        working_count = idle_count = 0
+    else:
+        working_count = sum(1 for a in agents if (a["status"] or "").lower() == "working")
+        idle_count    = len(agents) - working_count
+        agents_rows_html = ""
+        for a in agents:
+            role_short = (a["role"] or "").split("—")[0].strip()
+            role_short = role_short[:60] + ("…" if len(role_short) > 60 else "")
+            task_str   = a["current_task"] or f'<span class="muted">—</span>'
+            turns_str  = f'{a["turns_used"]}/{a["max_turns"]}'
+            age_str    = _time_ago(a["last_activity_at"] or "")
+            agents_rows_html += f"""
+            <tr>
+              <td><b>{a["name"]}</b><br>
+                  <span class="agent-role">{role_short}</span></td>
+              <td>{_agent_status_badge(a["status"])}</td>
+              <td style="font-size:0.85em">{task_str}</td>
+              <td style="text-align:center;font-family:monospace">{turns_str}</td>
+              <td class="muted" style="font-size:0.8em">{age_str}</td>
+            </tr>
+            """
+
+    summary_line = (
+        f'<p class="note" style="margin-bottom:6px">'
+        f'{t("agents_summary_label").format(working=working_count, idle=idle_count, total=len(agents))}'
+        f'</p>'
+    )
+
+    agents_table_html = f"""
+    {summary_line}
+    <table class="agent-table">
+      <thead>
+        <tr>
+          <th>{t("agents_col_name")}</th>
+          <th>{t("agents_col_status")}</th>
+          <th>{t("agents_col_task")}</th>
+          <th style="text-align:center">{t("agents_col_turns")}</th>
+          <th>{t("agents_col_last_active")}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {agents_rows_html}
+      </tbody>
+    </table>
+    """
+
+    # ── Build task summary HTML ──────────────────────────────────────────────────
+    total_tasks = pending_cnt + in_progress_cnt + done_cnt
+    task_counts_html = f"""
+    <div class="task-counts">
+      <div class="task-count-box" style="background:rgba(0,170,102,0.12);border:1px solid #00aa66">
+        <span class="count" style="color:#00aa66">{done_cnt}</span>
+        <span class="label">{t("agents_tasks_done")}</span>
+      </div>
+      <div class="task-count-box" style="background:rgba(204,136,0,0.12);border:1px solid #cc8800">
+        <span class="count" style="color:#cc8800">{in_progress_cnt}</span>
+        <span class="label">{t("agents_tasks_in_progress")}</span>
+      </div>
+      <div class="task-count-box" style="background:rgba(136,136,136,0.12);border:1px solid #666">
+        <span class="count" style="color:#aaa">{pending_cnt}</span>
+        <span class="label">{t("agents_tasks_pending")}</span>
+      </div>
+    </div>
+    """
+
+    if active_tasks:
+        active_rows_html = ""
+        for task in active_tasks:
+            desc_short = (task["description"] or "")[:100]
+            if len(task["description"] or "") > 100:
+                desc_short += "…"
+            assignee = task["assigned_to"] or f'<span class="muted">—</span>'
+            active_rows_html += f"""
+            <tr>
+              <td style="text-align:center;font-family:monospace">{task["id"]}</td>
+              <td style="font-size:0.85em">{desc_short}</td>
+              <td>{assignee}</td>
+            </tr>
+            """
+        active_tasks_html = f"""
+        <h3 style="color:#cc8800;margin:8px 0 4px">{t("agents_in_progress_tasks")}</h3>
+        <table class="agent-table">
+          <thead>
+            <tr>
+              <th style="width:40px">{t("agents_col_task_id")}</th>
+              <th>{t("agents_col_task_desc")}</th>
+              <th>{t("agents_col_task_assigned")}</th>
+            </tr>
+          </thead>
+          <tbody>{active_rows_html}</tbody>
+        </table>
+        """
+    else:
+        active_tasks_html = ""
+
+    tasks_html = f"""
+    <div class="train-summary">
+      <h3>{t("agents_header_tasks")}</h3>
+      {task_counts_html}
+      {active_tasks_html}
+    </div>
+    """
+
+    # ── Build messages HTML ──────────────────────────────────────────────────────
+    if not messages:
+        msg_rows_html = f'<tr><td colspan="4" class="muted">{t("agents_no_messages")}</td></tr>'
+    else:
+        msg_rows_html = ""
+        for msg in messages:
+            preview = (msg["summary"] or "")[:AGENTS_MSG_PREVIEW_CHARS]
+            if len(msg["summary"] or "") > AGENTS_MSG_PREVIEW_CHARS:
+                preview += "…"
+            age_str = _time_ago(msg["timestamp"] or "")
+            msg_rows_html += f"""
+            <tr>
+              <td><b>{msg["from_agent"]}</b></td>
+              <td>{msg["to_agent"]}</td>
+              <td class="msg-summary" title="{(msg['summary'] or '').replace(chr(34), '&quot;')}">{preview}</td>
+              <td class="muted" style="font-size:0.8em;white-space:nowrap">{age_str}</td>
+            </tr>
+            """
+
+    messages_html = f"""
+    <div class="train-summary" style="margin-top:16px">
+      <h3>{t("agents_header_messages")}</h3>
+      <table class="agent-table">
+        <thead>
+          <tr>
+            <th>{t("agents_col_msg_from")}</th>
+            <th>{t("agents_col_msg_to")}</th>
+            <th>{t("agents_col_msg_summary")}</th>
+            <th>{t("agents_col_msg_time")}</th>
+          </tr>
+        </thead>
+        <tbody>{msg_rows_html}</tbody>
+      </table>
+    </div>
+    """
+
+    return f"""
+    <div class="train-summary">
+      <h3>{t("agents_header_agents")}</h3>
+      {agents_table_html}
+    </div>
+    {tasks_html}
+    {messages_html}
+    <p class="note">{t("agents_db_path")}: <code>{db_path}</code></p>
+    """
+
+
+def _fetch_agents_section() -> None:
+    """Fetch agent team status in a background thread and update the cache."""
+    global _agents_checking
+    try:
+        html = _build_agents_html_from_db()
+    except Exception as exc:
+        html = f'<p class="badge-bad">Error: {exc}</p>'
+    with _agents_lock:
+        _agents_cache["html"] = html
+        _agents_cache["ts"] = time.time()
+        _agents_checking = False
+
+
+def _get_agents_section_html() -> str:
+    """Return cached agent status HTML; trigger background refresh if stale."""
+    global _agents_checking
+    with _agents_lock:
+        age = time.time() - _agents_cache["ts"]
+        cached_html = _agents_cache["html"]
+        should_refresh = age > AGENTS_CACHE_TTL_S and not _agents_checking
+        if should_refresh:
+            _agents_checking = True
+    if should_refresh:
+        _threading.Thread(target=_fetch_agents_section, daemon=True).start()
+    return cached_html
+
+
+def refresh_agents() -> str:
+    try:
+        return _build_agents_html_from_db()
+    except Exception as e:
+        return f'<p class="badge-bad">Error: {e}</p>'
+
+
 # ── Gradio app ────────────────────────────────────────────────────────────────
 
 def build_app() -> gr.Blocks:
@@ -1137,12 +1435,32 @@ def build_app() -> gr.Blocks:
                 infra_html = gr.HTML()
                 infra_btn.click(fn=refresh_infra, inputs=[], outputs=[infra_html])
 
+            # ── Tab 5: Agent Team Status ───────────────────────────────────
+            with gr.TabItem(t("tab_agents")):
+                gr.Markdown(t("agents_desc"))
+                with gr.Row():
+                    agents_btn = gr.Button(t("btn_refresh"), variant="primary", size="sm")
+                    agents_auto_cb = gr.Checkbox(
+                        label=t("train_auto_refresh").format(interval=AGENTS_CACHE_TTL_S),
+                        value=False,
+                    )
+                agents_html = gr.HTML()
+                agents_btn.click(fn=refresh_agents, inputs=[], outputs=[agents_html])
+                agents_timer = gr.Timer(value=AGENTS_CACHE_TTL_S, active=False)
+                agents_timer.tick(fn=refresh_agents, inputs=[], outputs=[agents_html])
+                agents_auto_cb.change(
+                    fn=lambda active: gr.update(active=active),
+                    inputs=[agents_auto_cb],
+                    outputs=[agents_timer],
+                )
+
         # Populate all tabs after the server is up (avoids blocking startup with
         # slow rclone/API calls during gr.HTML(value=fn) eager evaluation)
         app.load(fn=refresh_datasets,   inputs=[], outputs=[ds_html])
         app.load(fn=refresh_training,   inputs=[], outputs=[train_html, g_plot, d_plot])
         app.load(fn=refresh_checkpoints, inputs=[], outputs=[ckpt_html])
         app.load(fn=refresh_infra,       inputs=[], outputs=[infra_html])
+        app.load(fn=refresh_agents,      inputs=[], outputs=[agents_html])
 
     return app
 
