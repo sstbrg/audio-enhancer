@@ -161,12 +161,12 @@ This project uses a 12-person agent team defined in `.claude/agents/` and descri
 
 ## Architecture
 
-- Generator: HiFi-GAN, 11M params, single 2x upsample (48k→96k), skip connection
+- Generator: HiFi-GAN, ~10M params, single 2x upsample (48k→96k), skip connection
 - Discriminators: MPD (periods 2,3,5,7,11,17,23) + MSD (3 scales, spectral norm on first)
 - Training losses: adversarial + feature matching + multi-res STFT + mel + mastering
 - Mastering losses: perceptual STFT (auraloss), stereo image, dynamics (K-weighted), encodec embedding
 - CLAP + Audiobox: validation only (not differentiable)
-- Gradient clipping: max_norm=10.0, LeakyReLU slope=0.1 (from constants)
+- Gradient clipping: max_norm=5.0, LeakyReLU slope=0.1 (from constants)
 
 ## Training phases
 
@@ -174,7 +174,7 @@ This project uses a 12-person agent team defined in `.claude/agents/` and descri
 - **Goal:** Upscale 48kHz audio to 96kHz/24-bit using GAN
 - **Input:** High-quality audio downsampled to 48kHz
 - **Target:** Original high-quality audio at 96kHz
-- **Model:** HiFi-GAN generator (11M params, 2x upsample) + MPD/MSD discriminators
+- **Model:** HiFi-GAN generator (~10M params, 2x upsample) + MPD/MSD discriminators
 - **Losses:** Adversarial + feature matching + multi-res STFT + mel + mastering (perceptual STFT, dynamics, encodec)
 - **Datasets:** All available (EG-IPT, MUSDB18-HQ, VCTK, MusicNet, GTSinger, MoisesDB, MAESTRO)
 - **What it learns:** Reconstruct missing high-frequency harmonics above 24kHz that were lost in downsampling
