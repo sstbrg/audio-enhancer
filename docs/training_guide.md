@@ -191,6 +191,8 @@ The resume logic loads model weights, optimizer states, scheduler states, and AM
 
 Note: checkpoint loading happens before `torch.compile`. If you try to load a compiled model's checkpoint into an uncompiled model (or vice versa), key names will mismatch. The code handles this by loading before compilation.
 
+The `_unwrap_state_dict` helper was added to `train.py` to strip the `_orig_mod.` key prefix that `torch.compile` injects into `model.state_dict()`. This ensures checkpoints can always be loaded into a non-compiled model on resume. **Important:** the checkpoint save paths should use `_unwrap_state_dict(generator)` instead of `generator.state_dict()` directly — verify this is in place before the next training run (tracked in task #16).
+
 ---
 
 ## 6. Monitor Training
@@ -226,7 +228,7 @@ Validation metrics (logged every `checkpoint_interval` epochs):
 
 | Epoch | Discriminator | Generator | Notes |
 |-------|--------------|-----------|-------|
-| 0 | ~4.2 | ~35 | Stable; encodec spikes resolved |
+| 0 | ~4.2 | ~35 | **DONE** — checkpoint on Google Drive (`gdrive:audio-enhancer-datasets/checkpoints/checkpoint_0000.pt`). Encodec spikes resolved, training stable. |
 | 10+ | decreasing | decreasing | Should see gradual improvement |
 | 100+ | ~2-3 | ~15-25 | Model producing plausible HF content |
 
@@ -310,6 +312,7 @@ Always upload your checkpoints to Google Drive before destroying the instance.
 **Checkpoint resume fails with "key mismatch":**
 - If you changed the architecture (added/removed layers), optimizer state will be incompatible — this is expected and handled; a warning is printed and optimizer is reinitialized
 - Generator weights load with `strict=False` to allow partial loading
+- If keys have an `_orig_mod.` prefix, the checkpoint was saved from a `torch.compile`-wrapped model without using `_unwrap_state_dict`. Load with `{k.removeprefix("_orig_mod."): v for k, v in state.items()}` to fix manually, or use a checkpoint saved after the fix is applied.
 
 **torch.compile fails:**
 - The code catches compilation errors and falls back to eager mode; training continues

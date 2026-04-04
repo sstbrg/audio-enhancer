@@ -199,3 +199,25 @@ Generator: 48kHz → 96kHz
     ▼
 Discriminators judge: real or generated 96kHz?
 ```
+
+## Training Status
+
+### Phase 0 — Super-Resolution (current)
+
+- **Goal:** Upscale 48kHz audio to 96kHz/24-bit via GAN
+- **Status:** Epoch 0 complete. Losses stable: d≈4.2, g≈35. Encodec spikes resolved.
+- **Checkpoint:** `gdrive:audio-enhancer-datasets/checkpoints/checkpoint_0000.pt`
+- **AMP + torch.compile:** Committed and ready; not yet validated in a full training run.
+- **Pending fix:** `_unwrap_state_dict` helper in `train.py` must be wired into all checkpoint save paths before the next run (see `docs/training_guide.md` for details).
+
+### Phase 1 — Degradation Restoration (planned)
+
+- **Goal:** Restore lossy-compressed / poorly mastered audio using (degraded, clean) training pairs
+- **Plan:** `docs/phase1_degradation_plan.md`
+- **Status:** Planning complete; implementation not started.
+
+### Phase 2 — Full Pipeline (planned)
+
+- **Goal:** End-to-end: any audio in → studio-quality out
+- **Pipeline:** Apollo → AudioSR → custom GAN (fine-tuned)
+- **Status:** Deferred until Phase 1 complete.

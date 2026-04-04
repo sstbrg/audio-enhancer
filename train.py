@@ -36,6 +36,9 @@ from models import (
     MultiResolutionSTFTLoss,
 )
 from models.constants import (
+    CD_BIT_DEPTH,
+    CD_DITHER_AMPLITUDE,
+    CD_SAMPLE_RATE,
     INPUT_SAMPLE_RATE,
     GRAD_CLIP_MAX_NORM,
     LR_SCHEDULER_GAMMA,
@@ -243,9 +246,9 @@ def train(args):
         input_sr=INPUT_SAMPLE_RATE,
         segment_length=train_cfg["segment_length"],
         degradation_prob=deg_cfg.get("prob", 0.0),
-        degradation_cd_sr=deg_cfg.get("cd_sr", 44100),
-        degradation_bit_depth=deg_cfg.get("bit_depth", 16),
-        degradation_dither_amplitude=deg_cfg.get("dither_amplitude", 0.5),
+        degradation_cd_sr=deg_cfg.get("cd_sr", CD_SAMPLE_RATE),
+        degradation_bit_depth=deg_cfg.get("bit_depth", CD_BIT_DEPTH),
+        degradation_dither_amplitude=deg_cfg.get("dither_amplitude", CD_DITHER_AMPLITUDE),
     )
 
     # DataLoader: use WeightedRandomSampler when quality_sampling is configured,
@@ -548,9 +551,9 @@ def train(args):
             ckpt_path = ckpt_dir / f"checkpoint_{epoch:04d}.pt"
             ckpt_data = {
                 "epoch": epoch,
-                "generator": generator.state_dict(),
-                "mpd": mpd.state_dict(),
-                "msd": msd.state_dict(),
+                "generator": _unwrap_state_dict(generator),
+                "mpd": _unwrap_state_dict(mpd),
+                "msd": _unwrap_state_dict(msd),
                 "optim_g": optim_g.state_dict(),
                 "optim_d": optim_d.state_dict(),
                 "sched_g": sched_g.state_dict(),
@@ -572,9 +575,9 @@ def train(args):
     final_epoch = epoch if start_epoch < train_cfg["epochs"] else start_epoch - 1
     torch.save({
         "epoch": final_epoch,
-        "generator": generator.state_dict(),
-        "mpd": mpd.state_dict(),
-        "msd": msd.state_dict(),
+        "generator": _unwrap_state_dict(generator),
+        "mpd": _unwrap_state_dict(mpd),
+        "msd": _unwrap_state_dict(msd),
         "optim_g": optim_g.state_dict(),
         "optim_d": optim_d.state_dict(),
         "sched_g": sched_g.state_dict(),

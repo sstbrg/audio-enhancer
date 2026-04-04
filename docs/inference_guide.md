@@ -180,10 +180,16 @@ generator = Generator(
     resblock_kernel_sizes=gen_cfg["resblock_kernel_sizes"],
     resblock_dilation_sizes=gen_cfg["resblock_dilation_sizes"],
 )
-generator.load_state_dict(ckpt["generator"])
+
+# If the checkpoint was saved from a torch.compile-wrapped model without
+# _unwrap_state_dict, keys will have an _orig_mod. prefix. Strip it:
+gen_state = {k.removeprefix("_orig_mod."): v for k, v in ckpt["generator"].items()}
+generator.load_state_dict(gen_state)
 generator.eval()
 generator.remove_weight_norm()  # Fuses weight norm for faster inference
 ```
+
+Checkpoints saved by the current codebase (after the `_unwrap_state_dict` fix) do not have this prefix and load directly.
 
 Input: `(batch, 1, samples)` float32 tensor at 48kHz  
 Output: `(batch, 1, samples * 2)` float32 tensor at 96kHz

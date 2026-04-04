@@ -68,6 +68,7 @@ Resume: `--resume checkpoints/phase0/latest.pt`
 - Checkpoint: `gdrive:audio-enhancer-datasets/checkpoints/checkpoint_0000.pt`
 - Losses at end of epoch 0: d≈4.2, g≈35 (stable, encodec spikes resolved)
 - Training optimizations (AMP, torch.compile) committed but not yet tested in training
+- `_unwrap_state_dict` helper added to `train.py` (strips `_orig_mod.` prefix from compiled model state dicts) — must be wired into all checkpoint save paths before next training run
 - Vast.ai auto-shutdown after 15min idle (cron checks for train.py process)
 
 ## Datasets

@@ -81,11 +81,11 @@ class AudioEnhancer:
             resblock_dilation_sizes=gen_cfg["resblock_dilation_sizes"],
         ).to(self.device)
 
-        # Strip _orig_mod. prefix from keys saved by torch.compile'd models
+        # Strip _orig_mod. prefix from keys saved by torch.compile'd models.
+        # With the train.py fix, checkpoints are saved without the prefix,
+        # but we keep this guard for backward compatibility with old checkpoints.
         state_dict = ckpt["generator"]
-        cleaned = {}
-        for k, v in state_dict.items():
-            cleaned[k.replace("_orig_mod.", "")] = v
+        cleaned = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
         self.gan_model.load_state_dict(cleaned)
         self.gan_model.eval()
         self.gan_model.remove_weight_norm()
