@@ -102,19 +102,8 @@ class Generator(nn.Module):
         # Input projection — wider kernel to capture more temporal context
         self.conv_pre = weight_norm(nn.Conv1d(in_channels, channels, 7, padding=3))
 
-        # Encoder path — extract features from low-res input
-        self.encoder = nn.ModuleList()
-        ch = channels
-        for i in range(self.num_upsamples):
-            self.encoder.append(
-                weight_norm(nn.Conv1d(
-                    ch, ch, kernel_size=2 * upsample_rates[i],
-                    stride=upsample_rates[i],
-                    padding=upsample_rates[i] // 2,
-                ))
-            )
-
         # Upsampling path with residual blocks
+        ch = channels
         self.ups = nn.ModuleList()
         self.resblocks = nn.ModuleList()
 
@@ -136,9 +125,9 @@ class Generator(nn.Module):
         # High-frequency detail branch — parallel path focused on harmonics
         self.hf_branch = nn.Sequential(
             weight_norm(nn.Conv1d(ch, ch, 15, padding=7)),
-            nn.LeakyReLU(0.1),
+            nn.LeakyReLU(LEAKY_RELU_SLOPE),
             weight_norm(nn.Conv1d(ch, ch, 3, padding=1)),
-            nn.LeakyReLU(0.1),
+            nn.LeakyReLU(LEAKY_RELU_SLOPE),
         )
 
         # Output projection
@@ -149,6 +138,8 @@ class Generator(nn.Module):
         for r in upsample_rates:
             total_upsample *= r
         self.upsample_factor = total_upsample
+
+        self.n_resblocks = len(self.resblocks) // self.num_upsamples
 
         self.apply(init_weights)
 
@@ -173,12 +164,11 @@ class Generator(nn.Module):
             x = self.ups[i](x)
 
             # Apply all resblocks for this upsample level and sum
-            n_resblocks = len(self.resblocks) // self.num_upsamples
             xs = 0
-            for j in range(n_resblocks):
-                idx = i * n_resblocks + j
+            for j in range(self.n_resblocks):
+                idx = i * self.n_resblocks + j
                 xs = xs + self.resblocks[idx](x)
-            x = xs / n_resblocks
+            x = xs / self.n_resblocks
 
         # High-frequency detail
         hf = self.hf_branch(x)

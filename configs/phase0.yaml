@@ -47,6 +47,16 @@ gan:
     checkpoint_interval: 1
     log_interval: 50
 
+    # Quality-aware weighted sampling (Lara's recommendation).
+    # Ensures the model learns genuine harmonic generation from real hi-res
+    # sources rather than overfitting on synthetic upsampled targets.
+    # Weights are relative: hires draws ~70% of samples, midres ~20%, standard ~10%.
+    # Set all three to 1.0 to revert to uniform sampling.
+    quality_sampling:
+      weight_hires: 7.0      # EG-IPT, VCTK (96kHz) — real HR targets
+      weight_midres: 2.0     # GTSinger (48kHz) — 24-bit detail
+      weight_standard: 1.0  # MUSDB, MusicNet, MAESTRO, MoisesDB (<=44.1kHz)
+
     mastering:
       lambda_perceptual_stft: 45.0
       lambda_stereo: 10.0

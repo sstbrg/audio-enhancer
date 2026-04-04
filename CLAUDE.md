@@ -85,6 +85,38 @@ python analyzer_ui.py --lang ru  # Russian
 Two tabs: Enhance (apply model) + Analyze (quality metrics).
 All strings from locale files, all styles in CSS. Supports wav/flac/mp3/ogg/webm.
 
+## Agent team
+
+This project uses a 12-person agent team defined in `.claude/agents/` and described in `AGENTS.md`.
+**Always delegate work to the appropriate agent(s) rather than doing it directly.**
+
+### Team roster
+| Agent | Name | Domain |
+|-------|------|--------|
+| `system-engineer` | Jason | System oversight, final arbiter on conflicts |
+| `ai-team-lead` | Lara | AI/ML strategy, research, planning |
+| `ai-engineer-training` | Adam | Training pipeline, losses, metrics |
+| `ai-engineer-gans` | Kyle | Generator, discriminator architecture |
+| `data-engineer` | Cain | Datasets, augmentation, data pipelines |
+| `frontend-server` | Rona | Server-side dashboards, monitoring UI |
+| `frontend-analyzer` | Pierce | Analyzer Gradio UI, i18n |
+| `backend-analyzer` | Anton | Audio metrics, music analysis |
+| `devops-engineer` | Marina | Vast.ai, cloud, MLOps |
+| `docs-manager` | Perla | Documentation |
+| `git-expert` | Florence | Code review, git management |
+| `qa-expert` | Jack | Testing, QA, bug reporting |
+
+### Orchestration rules
+1. **Route every task** to the agent whose domain matches. If a task spans domains, spawn multiple agents in parallel.
+2. **Jason (system-engineer) has final say** on cross-team conflicts and system-level decisions.
+3. **Lara (ai-team-lead) has final say** on AI/ML conflicts between Adam, Kyle, and Cain.
+4. **Jack (qa-expert) can flag bugs to anyone** — all team members are responsible for fixing QA-reported bugs.
+5. **Florence (git-expert) reviews all code** before merges to main.
+6. When uncertain which agent to use, ask Jason to triage.
+7. Agents should read CLAUDE.md and relevant code before making decisions.
+8. Agents can talk to each other.
+9. All agents can commit and push to git develop branch.
+
 ## Commands
 
 - ALWAYS use `.venv` — never install packages globally or with --user

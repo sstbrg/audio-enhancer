@@ -9,7 +9,8 @@ Quality-aware training strategy:
   upsampled to 96kHz as synthetic target
   → model learns to handle real-world CD-quality input
 
-Batch composition target: ~70% real hi-res, ~30% CD-quality input diversity.
+Batch composition is controlled by ``quality_sampling`` weights in the training config
+(phase0.yaml).  Default: 70% hi-res, 20% mid-res, 10% standard.
 """
 
 import random
@@ -64,6 +65,36 @@ class AudioSRDataset(Dataset):
         print(f"  Hi-res (>=96kHz): {len(self.hires_indices)} files")
         print(f"  Mid-res (48kHz):  {len(self.midres_indices)} files")
         print(f"  Standard (<=44.1kHz): {len(self.standard_indices)} files")
+
+    def get_sample_weights(
+        self,
+        weight_hires: float,
+        weight_midres: float,
+        weight_standard: float,
+    ) -> list[float]:
+        """Return a per-sample weight list for use with WeightedRandomSampler.
+
+        Files in a tier that has no representatives get weight 0 so the
+        sampler never tries to draw from an empty set.  When an entire tier
+        is absent its configured weight is silently re-distributed by the
+        sampler (relative weights still hold among the remaining tiers).
+
+        Args:
+            weight_hires: Relative sampling weight for hi-res files (>=96kHz).
+            weight_midres: Relative sampling weight for mid-res files (48kHz).
+            weight_standard: Relative sampling weight for standard files (<=44.1kHz).
+
+        Returns:
+            List of per-file weights with length == len(self.files).
+        """
+        weights = [0.0] * len(self.files)
+        for i in self.hires_indices:
+            weights[i] = weight_hires
+        for i in self.midres_indices:
+            weights[i] = weight_midres
+        for i in self.standard_indices:
+            weights[i] = weight_standard
+        return weights
 
     def _classify_files(self):
         """Classify files into quality tiers based on sample rate."""

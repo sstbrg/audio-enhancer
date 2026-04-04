@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Training script for the 48kHz -> 192kHz GAN audio upsampler.
+"""Training script for the 48kHz -> 96kHz GAN audio upsampler.
 
 Usage:
     python train.py --data_dir /path/to/highres/audio
     python train.py --data_dir /path/to/highres/audio --config configs/default.yaml --resume checkpoints/latest.pt
 
-Expects high-quality audio files (96kHz+ preferred, 192kHz ideal).
+Expects high-quality audio files (96kHz+ preferred).
 The training process:
 1. Loads high-res audio
 2. Downsamples to 48kHz as input
-3. Trains generator to reconstruct the 192kHz version
+3. Trains generator to reconstruct the 96kHz version
 4. Discriminators enforce realistic waveform generation
 """
 
@@ -21,7 +21,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 import yaml
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -225,16 +225,39 @@ def train(args):
         input_sr=48000,
         segment_length=train_cfg["segment_length"],
     )
+
+    # DataLoader: use WeightedRandomSampler when quality_sampling is configured,
+    # otherwise fall back to plain shuffle so the interface stays backward-compatible.
+    qs_cfg = train_cfg.get("quality_sampling")
+    if qs_cfg:
+        sample_weights = dataset.get_sample_weights(
+            weight_hires=qs_cfg["weight_hires"],
+            weight_midres=qs_cfg["weight_midres"],
+            weight_standard=qs_cfg["weight_standard"],
+        )
+        sampler = WeightedRandomSampler(
+            weights=sample_weights,
+            num_samples=len(dataset),
+            replacement=True,
+        )
+        print(
+            f"Quality sampling enabled: hires={qs_cfg['weight_hires']}, "
+            f"midres={qs_cfg['weight_midres']}, standard={qs_cfg['weight_standard']}"
+        )
+        loader_kwargs = dict(sampler=sampler, shuffle=False)
+    else:
+        loader_kwargs = dict(shuffle=True)
+
     num_workers = min(os.cpu_count() or 4, 8)
     loader = DataLoader(
         dataset,
         batch_size=train_cfg["batch_size"],
-        shuffle=True,
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
         persistent_workers=True,
         prefetch_factor=4,
+        **loader_kwargs,
     )
     print(f"DataLoader: batch_size={train_cfg['batch_size']}, workers={num_workers}")
 
@@ -255,16 +278,6 @@ def train(args):
     msd = MultiScaleDiscriminator(
         num_scales=gan_cfg["discriminator"]["scales"]
     ).to(device)
-
-    # Compile models for faster execution (PyTorch 2.x)
-    if hasattr(torch, "compile"):
-        try:
-            generator = torch.compile(generator)
-            mpd = torch.compile(mpd)
-            msd = torch.compile(msd)
-            print("Models compiled with torch.compile")
-        except Exception as e:
-            print(f"torch.compile not available: {e}")
 
     # Losses
     stft_loss_fn = MultiResolutionSTFTLoss().to(device)
@@ -299,7 +312,8 @@ def train(args):
     sched_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=0.999)
     sched_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=0.999)
 
-    # Resume from checkpoint
+    # Resume from checkpoint — must happen BEFORE torch.compile to avoid
+    # _orig_mod.* key prefix mismatches in state_dict loading.
     start_epoch = 0
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
@@ -308,8 +322,30 @@ def train(args):
         msd.load_state_dict(ckpt["msd"])
         optim_g.load_state_dict(ckpt["optim_g"])
         optim_d.load_state_dict(ckpt["optim_d"])
+        # Restore scheduler state if available (backward-compatible)
+        if "sched_g" in ckpt:
+            sched_g.load_state_dict(ckpt["sched_g"])
+        if "sched_d" in ckpt:
+            sched_d.load_state_dict(ckpt["sched_d"])
+        # Restore AMP scaler state if available (backward-compatible)
+        if "scaler_g" in ckpt:
+            scaler_g.load_state_dict(ckpt["scaler_g"])
+        if "scaler_d" in ckpt:
+            scaler_d.load_state_dict(ckpt["scaler_d"])
         start_epoch = ckpt.get("epoch", 0) + 1
         print(f"Resumed from epoch {start_epoch}")
+
+    # Compile models for faster execution (PyTorch 2.x).
+    # Must be done AFTER checkpoint load — torch.compile wraps parameters
+    # under _orig_mod.* keys which would break state_dict compatibility.
+    if hasattr(torch, "compile"):
+        try:
+            generator = torch.compile(generator)
+            mpd = torch.compile(mpd)
+            msd = torch.compile(msd)
+            print("Models compiled with torch.compile")
+        except Exception as e:
+            print(f"torch.compile not available: {e}")
 
     # Logging
     ckpt_dir = Path(args.checkpoint_dir)
@@ -436,26 +472,23 @@ def train(args):
         # Save checkpoint
         if (epoch + 1) % train_cfg["checkpoint_interval"] == 0 or epoch == train_cfg["epochs"] - 1:
             ckpt_path = ckpt_dir / f"checkpoint_{epoch:04d}.pt"
-            torch.save({
+            ckpt_data = {
                 "epoch": epoch,
                 "generator": generator.state_dict(),
                 "mpd": mpd.state_dict(),
                 "msd": msd.state_dict(),
                 "optim_g": optim_g.state_dict(),
                 "optim_d": optim_d.state_dict(),
+                "sched_g": sched_g.state_dict(),
+                "sched_d": sched_d.state_dict(),
+                "scaler_g": scaler_g.state_dict(),
+                "scaler_d": scaler_d.state_dict(),
                 "config": config,
-            }, ckpt_path)
+            }
+            torch.save(ckpt_data, ckpt_path)
 
             # Also save as latest
-            torch.save({
-                "epoch": epoch,
-                "generator": generator.state_dict(),
-                "mpd": mpd.state_dict(),
-                "msd": msd.state_dict(),
-                "optim_g": optim_g.state_dict(),
-                "optim_d": optim_d.state_dict(),
-                "config": config,
-            }, ckpt_dir / "latest.pt")
+            torch.save(ckpt_data, ckpt_dir / "latest.pt")
 
             print(f"\nSaved checkpoint: {ckpt_path}")
 
@@ -468,6 +501,10 @@ def train(args):
         "msd": msd.state_dict(),
         "optim_g": optim_g.state_dict(),
         "optim_d": optim_d.state_dict(),
+        "sched_g": sched_g.state_dict(),
+        "sched_d": sched_d.state_dict(),
+        "scaler_g": scaler_g.state_dict(),
+        "scaler_d": scaler_d.state_dict(),
         "config": config,
     }, ckpt_dir / "latest.pt")
     print(f"\nSaved final checkpoint (epoch {epoch})")

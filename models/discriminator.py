@@ -43,7 +43,7 @@ class PeriodDiscriminator(nn.Module):
 
         for conv in self.convs:
             x = conv(x)
-            x = F.leaky_relu(x, 0.1)
+            x = F.leaky_relu(x, LEAKY_RELU_SLOPE)
             fmap.append(x)
 
         x = self.conv_post(x)
@@ -101,7 +101,7 @@ class ScaleDiscriminator(nn.Module):
         fmap = []
         for conv in self.convs:
             x = conv(x)
-            x = F.leaky_relu(x, 0.1)
+            x = F.leaky_relu(x, LEAKY_RELU_SLOPE)
             fmap.append(x)
         x = self.conv_post(x)
         fmap.append(x)
@@ -129,12 +129,13 @@ class MultiScaleDiscriminator(nn.Module):
         real_fmaps = []
         fake_fmaps = []
 
+        y_d, y_hat_d = y, y_hat
         for i, d in enumerate(self.discriminators):
             if i > 0:
-                y = self.pools[i - 1](y)
-                y_hat = self.pools[i - 1](y_hat)
-            real_out, real_fmap = d(y)
-            fake_out, fake_fmap = d(y_hat)
+                y_d = self.pools[i - 1](y_d)
+                y_hat_d = self.pools[i - 1](y_hat_d)
+            real_out, real_fmap = d(y_d)
+            fake_out, fake_fmap = d(y_hat_d)
             real_outputs.append(real_out)
             fake_outputs.append(fake_out)
             real_fmaps.append(real_fmap)

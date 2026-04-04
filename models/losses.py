@@ -58,6 +58,10 @@ class STFTLoss(nn.Module):
             y = y.squeeze(1)
             y_hat = y_hat.squeeze(1)
 
+        # torch.stft does not support float16 — cast to float32 before calling.
+        y = y.float()
+        y_hat = y_hat.float()
+
         y_stft = torch.stft(y, self.fft_size, self.hop_size, self.win_size,
                             self.window, return_complex=True)
         y_hat_stft = torch.stft(y_hat, self.fft_size, self.hop_size, self.win_size,
@@ -124,8 +128,10 @@ class MelSpectrogramLoss(nn.Module):
             y = y.squeeze(1)
             y_hat = y_hat.squeeze(1)
 
-        y_mel = self.mel_transform(y)
-        y_hat_mel = self.mel_transform(y_hat)
+        # MelSpectrogram may produce dtype mismatches under AMP autocast —
+        # cast to float32 before calling the transform.
+        y_mel = self.mel_transform(y.float())
+        y_hat_mel = self.mel_transform(y_hat.float())
 
         return F.l1_loss(torch.log(y_hat_mel + 1e-8), torch.log(y_mel + 1e-8))
 

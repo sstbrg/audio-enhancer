@@ -262,13 +262,16 @@ class EncodecEmbeddingLoss(nn.Module):
             y_48 = y_48.expand(-1, 2, -1)
             y_hat_48 = y_hat_48.expand(-1, 2, -1)
 
-        # Run encoder in train mode (needed for LSTM backward) but frozen
+        # EnCodec's LSTM encoder is not fp16-safe — disable autocast and cast
+        # inputs to float32 explicitly to avoid NaN under AMP.
+        # Run encoder in train mode (needed for LSTM backward) but frozen.
         self._model.encoder.train()
-        with torch.no_grad():
-            emb_ref = self._model.encoder(y_48)
+        with torch.no_grad(), torch.autocast("cuda", enabled=False):
+            emb_ref = self._model.encoder(y_48.float())
 
         # y_hat path: gradients flow through resampling to generator
-        emb_gen = self._model.encoder(y_hat_48)
+        with torch.autocast("cuda", enabled=False):
+            emb_gen = self._model.encoder(y_hat_48.float())
 
         return F.mse_loss(emb_gen, emb_ref.detach())
 
