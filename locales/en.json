@@ -172,6 +172,7 @@
   "not_available": "not available",
   "not_installed": "not installed",
   "audiobox_not_available": "Audiobox not available",
+  "music_analysis_error": "Music analysis unavailable",
 
   "dashboard_title": "Audio Enhancer — Monitor",
   "dashboard_desc": "Read-only monitoring dashboard for training and dataset status.",

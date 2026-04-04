@@ -32,7 +32,17 @@ from models.constants import (
 # ── Localization ──────────────────────────────────────────────────────────────
 
 LOCALES_DIR = Path(__file__).parent / "locales"
-_current_locale = {}
+
+# Parse CLI args early so the Gradio block (built at module level) can use
+# the selected language for component labels.
+_arg_parser = argparse.ArgumentParser(add_help=False)
+_arg_parser.add_argument("--lang", default="en", choices=["en", "ru"])
+_arg_parser.add_argument("--port", default=7860, type=int)
+_cli_args, _ = _arg_parser.parse_known_args()
+
+# Map CLI short codes to the display names used by the language selector widget.
+_LANG_CODE_TO_NAME = {"en": "English", "ru": "Русский"}
+_LANG_NAME_TO_CODE = {v: k for k, v in _LANG_CODE_TO_NAME.items()}
 
 
 def load_locale(lang: str = "en") -> dict:
@@ -47,7 +57,8 @@ _all_locales = {
     "English": load_locale("en"),
     "Русский": load_locale("ru"),
 }
-_current_lang = "English"
+# Initialise to the language requested via --lang (defaults to English).
+_current_lang: str = _LANG_CODE_TO_NAME.get(_cli_args.lang, "English")
 
 
 def t(key: str) -> str:
@@ -58,10 +69,6 @@ def t(key: str) -> str:
 def set_lang(lang: str):
     global _current_lang
     _current_lang = lang
-
-
-# Load default
-_current_locale.update(load_locale("en"))
 
 
 def _load_audio(path: str) -> tuple[np.ndarray, int]:
@@ -652,7 +659,7 @@ def analyze(audio_file, ref_file, lang="English"):
 
             html += "</table>"
     except Exception as e:
-        html += f'<p class="muted">Music analysis: {e}</p>'
+        html += f'<p class="muted">{t("music_analysis_error")}: {e}</p>'
 
     # Before vs After comparison (when reference provided)
     if ref_file is not None:
@@ -908,23 +915,23 @@ with gr.Blocks(
         gr.Markdown(f"# 🎵 {t('app_title')}")
         lang_selector = gr.Radio(
             choices=["English", "Русский"],
-            value="English" if "en" in str(LOCALES_DIR / "en.json") else "Русский",
+            value=_current_lang,
             label="🌐",
             scale=0,
         )
     with gr.Tabs():
-        with gr.TabItem("Enhance / Улучшить"):
+        with gr.TabItem(t("tab_enhance")):
             with gr.Row():
                 with gr.Column(scale=1):
-                    enh_audio = gr.File(label="Audio / Аудио", file_types=AUDIO_FILE_TYPES)
-                    enh_checkpoint = gr.File(label="Checkpoint (.pt)", file_types=[".pt"])
-                    enh_skip_apollo = gr.Checkbox(label="Skip Apollo", value=True)
-                    enh_skip_audiosr = gr.Checkbox(label="Skip AudioSR", value=True)
-                    enh_btn = gr.Button("Enhance / Улучшить", variant="primary", size="lg")
+                    enh_audio = gr.File(label=t("enhance_audio_label"), file_types=AUDIO_FILE_TYPES)
+                    enh_checkpoint = gr.File(label=t("enhance_checkpoint_label"), file_types=[".pt"])
+                    enh_skip_apollo = gr.Checkbox(label=t("enhance_skip_apollo"), value=True)
+                    enh_skip_audiosr = gr.Checkbox(label=t("enhance_skip_audiosr"), value=True)
+                    enh_btn = gr.Button(t("enhance_btn"), variant="primary", size="lg")
 
                 with gr.Column(scale=2):
                     enh_report = gr.HTML()
-                    enh_output = gr.File(label="Output")
+                    enh_output = gr.File(label=t("enhance_output_label"))
 
             enh_btn.click(
                 fn=enhance,
@@ -932,12 +939,12 @@ with gr.Blocks(
                 outputs=[enh_report, enh_output],
             )
 
-        with gr.TabItem("Analyze / Анализ"):
+        with gr.TabItem(t("tab_analyze")):
             with gr.Row():
                 with gr.Column(scale=1):
-                    audio_input = gr.File(label="Audio / Аудио", file_types=AUDIO_FILE_TYPES)
-                    ref_input = gr.File(label="Reference (optional)", file_types=AUDIO_FILE_TYPES)
-                    analyze_btn = gr.Button("Analyze / Анализ", variant="primary", size="lg")
+                    audio_input = gr.File(label=t("analyze_audio_label"), file_types=AUDIO_FILE_TYPES)
+                    ref_input = gr.File(label=t("analyze_ref_label"), file_types=AUDIO_FILE_TYPES)
+                    analyze_btn = gr.Button(t("analyze_btn"), variant="primary", size="lg")
 
                 with gr.Column(scale=2):
                     report_html = gr.HTML()
@@ -951,10 +958,12 @@ with gr.Blocks(
             )
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--lang", default="en", choices=["en", "ru"], help="UI language")
-    parser.add_argument("--port", default=7860, type=int)
+    # Full arg parsing with --help support (early parse above used add_help=False).
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--lang", default="en", choices=["en", "ru"], help="UI language (en/ru)")
+    parser.add_argument("--port", default=7860, type=int, help="Port to listen on")
     args = parser.parse_args()
-    _current_locale.update(load_locale(args.lang))
+    # _current_lang was already set from _cli_args at module load time, so the
+    # Gradio components are already labelled correctly.  Nothing else to do here.
     app.queue()
     app.launch(server_name="0.0.0.0", server_port=args.port)

@@ -183,3 +183,132 @@ None found.
 - **Cain/Adam:** Address I8 (prepare_dataset.py default sample rate mismatch)
 - **Author:** Review team/status.json for gitignore eligibility (I7)
 - **Author:** Commit AGENTS.md, docs/, tests/ directories (I5/I6)
+
+---
+
+# Second Code Review — Florence-2
+
+**Reviewer:** Florence-2 (git-expert)
+**Date:** 2026-04-04
+**Branch:** develop
+**Files reviewed:** train.py, models/generator.py, models/discriminator.py, models/losses.py, models/mastering_losses.py, data/dataset.py, enhance.py, infra/setup-vastai.sh
+
+---
+
+## Summary
+
+5 critical blockers found (must fix before merge to main), 7 warnings (should fix before merge), and 5 low-priority notes. Training loop logic is otherwise sound: AMP is correctly scoped, discriminator detach is correct, `_unwrap_state_dict` is wired into all checkpoint saves, `torch.compile` happens after checkpoint load.
+
+---
+
+## CRITICAL (must fix before merge to main)
+
+### C1 — `weights_only=False` on `torch.load`
+- **Files:** `train.py:387`, `enhance.py:73`
+- **Issue:** Both checkpoint load calls pass `weights_only=False`. This allows arbitrary code execution if a malicious checkpoint is loaded (PyTorch pickle vulnerability). Should be `weights_only=True` when possible. Since config dict is embedded in the checkpoint this is hard to avoid without a schema change, but it must be explicitly noted as a known risk. Recommend separating config from checkpoint or implementing a safe loader.
+- **Status:** Open — Adam to fix.
+
+### C2 — Temp file leak on exception in `_run_validation`
+- **Files:** `train.py:188-222`
+- **Issue:** `_run_validation` opens two `NamedTemporaryFile(delete=False)` files and calls `os.unlink` inside the inner try block. If any metric call throws before the unlink (e.g., `sf.write` raises), the temp files are never cleaned up. No `finally:` block or `try/finally` cleanup. Over many epochs this leaks disk space.
+- **Fix:** Use `try/finally` or a context manager that deletes on exit.
+- **Status:** Open — Adam to fix.
+
+### C3 — Hardcoded input Nyquist assumption
+- **Files:** `train.py:167`
+- **Issue:** `input_nyquist = output_sr // 4` encodes that input_sr is always exactly half of output_sr (48k = 96k/2). Works today but will silently produce wrong HF masks if output_sr or input_sr ever changes. Should use `INPUT_SAMPLE_RATE // 2` instead.
+- **Status:** Open — Adam to fix.
+
+### C4 — Multiple hardcoded sample rates in `enhance.py`
+- **Files:** `enhance.py:105, 214-216, 225, 270, 278-280`
+- **Issue:** `44100`, `48000` used as literals in Apollo and GAN pipeline stages instead of being read from `constants.py`. Specifically: Apollo `sr=44100`, chunk overlap `=44100`, `sr != 44100`, `return 48000`. Violates CLAUDE.md "no magic numbers" rule.
+- **Fix:** Use `CD_SAMPLE_RATE` / `INPUT_SAMPLE_RATE` from constants throughout.
+- **Status:** Open — Adam to fix.
+
+### C5 — Magic numbers in `MultiResolutionSTFTLoss`
+- **Files:** `models/losses.py:92-95`
+- **Issue:** STFTLoss configurations `(512, 50, 240)`, `(1024, 120, 600)`, etc. are hardcoded in `__init__`. Should be constants in `constants.py`.
+- **Status:** Open — Adam to fix.
+
+---
+
+## WARNING (should fix before merge)
+
+### W1 — AMP scaler.update() called after skipped step
+- **File:** `train.py:533-552`
+- **Issue:** When a loss spike is detected, `optim_g.zero_grad()` is called and the step is skipped, but `scaler_g.update()` is still called unconditionally (line 552). Per PyTorch docs, `scaler.update()` should only be called after `scaler.step()`. Calling it without a preceding step can cause the loss scale to be incorrectly updated.
+- **Fix:** Gate `scaler_g.update()` behind `if not g_step_skipped`.
+- **Status:** Open — Adam to fix.
+
+### W2 — Validation reuses the training loader
+- **File:** `train.py:112`
+- **Issue:** `_run_validation` is called with the same DataLoader used for training (which uses random sampling / WeightedRandomSampler). Validation should use a fixed held-out split or at minimum a deterministically seeded subset so metrics are comparable across epochs.
+- **Status:** Open — tracked as follow-up.
+
+### W3 — `epoch` variable unbound edge case
+- **File:** `train.py:620-622`
+- **Issue:** The `final_epoch = epoch if start_epoch < train_cfg["epochs"] else start_epoch - 1` still uses a bare `epoch` name that could be unbound in Python if the loop body never executes (range is empty). Use a proper sentinel: `final_epoch = start_epoch - 1` then update inside the loop.
+- **Status:** Open — Adam to fix.
+
+### W4 — `n_resblocks` integer division assumption in generator
+- **File:** `models/generator.py:142`
+- **Issue:** `self.n_resblocks = len(self.resblocks) // self.num_upsamples` assumes resblocks are evenly distributed across upsample levels. If counts are non-even, silently truncates. Add assertion: `assert len(self.resblocks) % self.num_upsamples == 0`.
+- **Status:** Open — Kyle to fix (task #14).
+
+### W5 — CD degradation normalization order note
+- **File:** `data/dataset.py:260-268`
+- **Issue:** The peak is computed as `max(hr.abs().max(), lr.abs().max())` AFTER degradation, so quantization dither noise can slightly affect the shared normalization scale. Minor but worth noting.
+- **Status:** Accepted as-is (low impact).
+
+### W6 — `torch.isfinite` misleading comment in mastering_losses.py
+- **File:** `models/mastering_losses.py:501`
+- **Issue:** Comment claims this avoids per-term `.item()` syncs, but `torch.isfinite` on a GPU tensor still requires a sync to transfer the boolean to CPU for the Python if-statement. Comment is misleading.
+- **Fix:** Remove or correct the comment.
+- **Status:** Open — minor, flagged for follow-up.
+
+### W7 — GAN chunk size magic number in `enhance.py`
+- **File:** `enhance.py:291`
+- **Issue:** `48000 * 10` should be derived from `INPUT_SAMPLE_RATE` constant and a named constant (e.g., `GAN_CHUNK_SECONDS = 10`).
+- **Status:** Covered by C4 fix.
+
+---
+
+## NOTE (nice to have / low priority)
+
+### N1 — `GDRIVE_CHECKPOINT_REMOTE` in `train.py`
+- **File:** `train.py:72`
+- **Issue:** Module-level constant with hardcoded string. Belongs in `constants.py` or a config file.
+
+### N2 — `infra/setup-vastai.sh` — no security issues found
+- The script uses `set -euo pipefail`, all variables are quoted, user inputs are case-matched. Security posture is acceptable.
+
+### N3 — `models/discriminator.py` — clean, no issues
+- Spectral norm correctly applied only to first scale discriminator. Padding and period reshape are correct.
+
+### N4 — `models/generator.py:156` — linear interpolation correct
+- `interpolate(..., mode="linear", align_corners=False)` on 3D tensor is correct for 1D audio signals.
+
+### N5 — Checkpoint epoch resume is correct but has edge case
+- **File:** `train.py:419`
+- `start_epoch = ckpt.get("epoch", 0) + 1` is correct, but if a checkpoint was saved mid-epoch (crash before loop completes), the partial epoch is skipped entirely. Acceptable given current checkpoint-per-epoch strategy.
+
+---
+
+## Fix Status Summary
+
+| ID | Issue | Owner | Status |
+|----|-------|-------|--------|
+| C1 | weights_only=False in torch.load | Adam | **Open** |
+| C2 | Temp file leak in _run_validation | Adam | **Open** |
+| C3 | Hardcoded Nyquist in train.py | Adam | **Open** |
+| C4 | Magic sample rates in enhance.py | Adam | **Open** |
+| C5 | Magic STFT params in losses.py | Adam | **Open** |
+| W1 | AMP scaler.update after skipped step | Adam | Open |
+| W2 | Validation reuses training loader | Adam | Open (follow-up) |
+| W3 | epoch var unbound edge case | Adam | Open |
+| W4 | n_resblocks assertion missing | Kyle | Open (task #14) |
+| W5 | CD degradation normalization | — | Accepted |
+| W6 | Misleading torch.isfinite comment | Adam | Open (minor) |
+| W7 | GAN chunk size magic number | Adam | See C4 |
+
+**Do NOT merge to main until C1–C5 are resolved.**
