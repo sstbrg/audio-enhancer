@@ -320,8 +320,15 @@ def train(args):
         generator.load_state_dict(ckpt["generator"], strict=False)
         mpd.load_state_dict(ckpt["mpd"])
         msd.load_state_dict(ckpt["msd"])
-        optim_g.load_state_dict(ckpt["optim_g"])
-        optim_d.load_state_dict(ckpt["optim_d"])
+        # Restore optimizer state — skip if param groups changed (e.g. layers removed)
+        try:
+            optim_g.load_state_dict(ckpt["optim_g"])
+        except ValueError:
+            print("Warning: generator optimizer state incompatible, reinitializing")
+        try:
+            optim_d.load_state_dict(ckpt["optim_d"])
+        except ValueError:
+            print("Warning: discriminator optimizer state incompatible, reinitializing")
         # Restore scheduler state if available (backward-compatible)
         if "sched_g" in ckpt:
             sched_g.load_state_dict(ckpt["sched_g"])
