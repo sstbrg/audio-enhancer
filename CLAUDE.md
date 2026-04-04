@@ -21,8 +21,9 @@ models/
 data/
   dataset.py          # AudioSRDataset: creates (48kHz, 96kHz) pairs on the fly
 metrics/
-  evaluate.py         # SI-SNR, SDR, CDPAM, ViSQOL, Audiobox, PAM, MuQ-Eval, chroma/MFCC/onset
-  music_analysis.py   # Genre, mood, instruments, key, BPM (Essentia, CLAP, MERT)
+  evaluate.py           # SI-SNR, SDR, CDPAM, ViSQOL, Audiobox, PAM, MuQ-Eval, chroma/MFCC/onset
+  music_analysis.py     # Genre, mood, instruments, key, BPM (Essentia, CLAP, MERT)
+  upscale_potential.py  # Upscale potential assessment: sample rate ceiling, codec artifacts, bit depth headroom
 configs/
   phase0.yaml         # Phase 0: 96kHz target, batch 8, checkpoint every epoch
   default.yaml        # Default config
@@ -68,7 +69,7 @@ Resume: `--resume checkpoints/phase0/latest.pt`
 - Checkpoint: `gdrive:audio-enhancer-datasets/checkpoints/checkpoint_0000.pt`
 - Losses at end of epoch 0: d≈4.2, g≈35 (stable, encodec spikes resolved)
 - Training optimizations (AMP, torch.compile) committed but not yet tested in training
-- `_unwrap_state_dict` helper added to `train.py` (strips `_orig_mod.` prefix from compiled model state dicts) — must be wired into all checkpoint save paths before next training run
+- `_unwrap_state_dict` helper wired into all checkpoint save paths in `train.py` (lines 600-602, 625-627) — strips `_orig_mod.` prefix from compiled model state dicts (done)
 - Vast.ai auto-shutdown after 15min idle (cron checks for train.py process)
 
 ## Datasets
@@ -112,7 +113,7 @@ Vast.ai API key read from `VAST_API_KEY` env var or `~/.config/vastai/vast_api_k
 
 ## Agent team
 
-This project uses a 12-person agent team defined in `.claude/agents/` and described in `AGENTS.md`.
+This project uses a 12-person agent team defined in `.claude/agents/`.
 **Always delegate work to the appropriate agent(s) rather than doing it directly.**
 
 ### Team roster
@@ -202,10 +203,8 @@ This project uses a 12-person agent team defined in `.claude/agents/` and descri
 1. Test AMP + torch.compile training (committed, not yet run)
 2. Evaluate epoch 0 checkpoint quality with analyzer GUI
 3. Continue training (more epochs, possibly larger batch with AMP)
-4. Add 44.1kHz/16-bit input degradation to dataset (simulate CD quality input)
-5. Analyzer: add "upscale potential" assessment — detect sample rate ceiling, codec artifacts, bit depth headroom, spectral rolloff vs nyquist gap
-6. MAESTRO dataset: re-download on Vast.ai (101/120GB incomplete, auto-retry script in place)
-7. MoisesDB: user requested access at developer.moises.ai — download when link arrives
-8. MedleyDB: user requested access at medleydb.weebly.com — download when link arrives
-9. Phase 1: degradation pipeline (codec artifacts, bad EQ, compression, stereo damage)
-10. Vast.ai instance may still be running (auto-shutdown was disabled for MAESTRO download) — check and destroy if done
+4. MAESTRO dataset: re-download on Vast.ai (101/120GB incomplete, auto-retry script in place)
+5. MoisesDB: user requested access at developer.moises.ai — download when link arrives
+6. MedleyDB: user requested access at medleydb.weebly.com — download when link arrives
+7. Phase 1: degradation pipeline (codec artifacts, bad EQ, compression, stereo damage)
+8. Vast.ai instance may still be running (auto-shutdown was disabled for MAESTRO download) — check and destroy if done
