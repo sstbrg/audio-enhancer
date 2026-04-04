@@ -17,7 +17,6 @@ Based on research from:
 - FINALLY (NeurIPS 2024) — WavLM perceptual features
 """
 
-import math
 import warnings
 
 from .constants import OUTPUT_SAMPLE_RATE
@@ -124,15 +123,20 @@ class StereoImageLoss(nn.Module):
 
     def _stereo_width_loss(self, y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """Penalize stereo width deviation (ratio of side to mid energy)."""
-        mid_hat = (y_hat[:, 0] + y_hat[:, 1]) / 2
-        side_hat = (y_hat[:, 0] - y_hat[:, 1]) / 2
-        mid_ref = (y[:, 0] + y[:, 1]) / 2
-        side_ref = (y[:, 0] - y[:, 1]) / 2
+        # Squaring and division can overflow/underflow in float16; run in float32.
+        with torch.autocast("cuda", enabled=False):
+            y_hat_f = y_hat.float()
+            y_f = y.float()
 
-        width_hat = torch.mean(side_hat ** 2, dim=-1) / (torch.mean(mid_hat ** 2, dim=-1) + 1e-8)
-        width_ref = torch.mean(side_ref ** 2, dim=-1) / (torch.mean(mid_ref ** 2, dim=-1) + 1e-8)
+            mid_hat = (y_hat_f[:, 0] + y_hat_f[:, 1]) / 2
+            side_hat = (y_hat_f[:, 0] - y_hat_f[:, 1]) / 2
+            mid_ref = (y_f[:, 0] + y_f[:, 1]) / 2
+            side_ref = (y_f[:, 0] - y_f[:, 1]) / 2
 
-        return F.mse_loss(width_hat, width_ref)
+            width_hat = torch.mean(side_hat ** 2, dim=-1) / (torch.mean(mid_hat ** 2, dim=-1) + 1e-8)
+            width_ref = torch.mean(side_ref ** 2, dim=-1) / (torch.mean(mid_ref ** 2, dim=-1) + 1e-8)
+
+            return F.mse_loss(width_hat, width_ref)
 
 
 # ---------------------------------------------------------------------------
@@ -461,52 +465,47 @@ class MasteringLoss(nn.Module):
         Returns:
             (total_loss, loss_dict) for logging
         """
-        losses = {}
+        # Collect individual loss tensors, then do a single NaN/inf check
+        # at the end to avoid per-term .item() calls that force CUDA syncs.
+        terms: list[tuple[str, torch.Tensor, float]] = []
         total = torch.tensor(0.0, device=y.device)
-
-        def _safe_add(name: str, term: torch.Tensor, weight: float) -> torch.Tensor:
-            """Accumulate a weighted loss term, skipping NaN/inf components."""
-            val = term.item()
-            if not math.isfinite(val):
-                warnings.warn(
-                    f"MasteringLoss: '{name}' produced non-finite value {val}, skipping",
-                    RuntimeWarning,
-                )
-                return total  # return unchanged accumulator
-            losses[name] = val
-            return total + weight * term
 
         # Perceptual STFT (mel-scaled, A-weighted)
         if self.weights["perceptual_stft"] > 0:
-            l = self.perceptual_stft(y_hat, y)
-            total = _safe_add("perceptual_stft", l, self.weights["perceptual_stft"])
+            terms.append(("perceptual_stft", self.perceptual_stft(y_hat, y), self.weights["perceptual_stft"]))
 
         # Stereo image (only for multi-channel)
         if self.weights["stereo"] > 0 and y.shape[1] >= 2:
-            l = self.stereo_image(y_hat, y)
-            total = _safe_add("stereo", l, self.weights["stereo"])
+            terms.append(("stereo", self.stereo_image(y_hat, y), self.weights["stereo"]))
 
         # Dynamic range
         if self.weights["dynamics"] > 0:
-            l = self.dynamics(y_hat, y)
-            total = _safe_add("dynamics", l, self.weights["dynamics"])
+            terms.append(("dynamics", self.dynamics(y_hat, y), self.weights["dynamics"]))
 
         # EnCodec embedding
         if self.weights["encodec"] > 0:
-            l = self.encodec_emb(y_hat, y, input_sr=self.sample_rate)
-            total = _safe_add("encodec", l, self.weights["encodec"])
+            terms.append(("encodec", self.encodec_emb(y_hat, y, input_sr=self.sample_rate), self.weights["encodec"]))
 
         # Audiobox PQ (no-reference, experimental)
         if self.audiobox_pq is not None and self.weights["audiobox_pq"] > 0:
-            l = self.audiobox_pq(y_hat, sample_rate=self.sample_rate)
-            losses["audiobox_pq"] = l.item()
-            total = total + self.weights["audiobox_pq"] * l
+            terms.append(("audiobox_pq", self.audiobox_pq(y_hat, sample_rate=self.sample_rate), self.weights["audiobox_pq"]))
 
         # CLAP embedding
         if self.clap_emb is not None and self.weights["clap"] > 0:
-            l = self.clap_emb(y_hat, y, input_sr=self.sample_rate)
-            losses["clap"] = l.item()
-            total = total + self.weights["clap"] * l
+            terms.append(("clap", self.clap_emb(y_hat, y, input_sr=self.sample_rate), self.weights["clap"]))
+
+        # Accumulate with a single batched NaN/inf guard — uses torch.isfinite
+        # on the GPU to avoid one .item() sync per term.
+        losses: dict[str, float] = {}
+        for name, term, weight in terms:
+            if torch.isfinite(term):
+                total = total + weight * term
+                losses[name] = term.item()
+            else:
+                warnings.warn(
+                    f"MasteringLoss: '{name}' produced non-finite value, skipping",
+                    RuntimeWarning,
+                )
 
         losses["mastering_total"] = total.item()
         return total, losses

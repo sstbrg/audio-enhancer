@@ -19,7 +19,6 @@ import time
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 import yaml
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.utils.tensorboard import SummaryWriter
@@ -36,6 +35,7 @@ from models import (
     MelSpectrogramLoss,
     MultiResolutionSTFTLoss,
 )
+from models.constants import INPUT_SAMPLE_RATE, GRAD_CLIP_MAX_NORM, LR_SCHEDULER_GAMMA
 from models.mastering_losses import MasteringLoss
 
 
@@ -154,7 +154,6 @@ def _run_validation(generator, loader, device, writer, epoch, global_step, outpu
                 except Exception:
                     pass
 
-                import os
                 os.unlink(f_ref.name)
                 os.unlink(f_enh.name)
         except Exception:
@@ -219,11 +218,16 @@ def train(args):
     print(f"Target: 48kHz → {output_sr // 1000}kHz")
 
     # Dataset
+    deg_cfg = train_cfg.get("degradation", {})
     dataset = AudioSRDataset(
         root_dir=args.data_dir,
         target_sr=output_sr,
-        input_sr=48000,
+        input_sr=INPUT_SAMPLE_RATE,
         segment_length=train_cfg["segment_length"],
+        degradation_prob=deg_cfg.get("prob", 0.0),
+        degradation_cd_sr=deg_cfg.get("cd_sr", 44100),
+        degradation_bit_depth=deg_cfg.get("bit_depth", 16),
+        degradation_dither_amplitude=deg_cfg.get("dither_amplitude", 0.5),
     )
 
     # DataLoader: use WeightedRandomSampler when quality_sampling is configured,
@@ -309,8 +313,8 @@ def train(args):
     )
 
     # LR schedulers
-    sched_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=0.999)
-    sched_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=0.999)
+    sched_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=LR_SCHEDULER_GAMMA)
+    sched_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=LR_SCHEDULER_GAMMA)
 
     # Resume from checkpoint — must happen BEFORE torch.compile to avoid
     # _orig_mod.* key prefix mismatches in state_dict loading.
@@ -362,6 +366,7 @@ def train(args):
     global_step = start_epoch * len(loader)
     train_start = time.time()
     max_seconds = args.max_hours * 3600 if args.max_hours else float("inf")
+    grad_clip = train_cfg.get("grad_clip_norm", GRAD_CLIP_MAX_NORM)
 
     for epoch in range(start_epoch, train_cfg["epochs"]):
         # Time limit check
@@ -402,8 +407,8 @@ def train(args):
 
             scaler_d.scale(loss_d).backward()
             scaler_d.unscale_(optim_d)
-            torch.nn.utils.clip_grad_norm_(
-                list(mpd.parameters()) + list(msd.parameters()), max_norm=10.0
+            grad_norm_d = torch.nn.utils.clip_grad_norm_(
+                list(mpd.parameters()) + list(msd.parameters()), max_norm=grad_clip
             )
             scaler_d.step(optim_d)
             scaler_d.update()
@@ -441,7 +446,7 @@ def train(args):
 
             scaler_g.scale(loss_g).backward()
             scaler_g.unscale_(optim_g)
-            torch.nn.utils.clip_grad_norm_(generator.parameters(), max_norm=10.0)
+            grad_norm_g = torch.nn.utils.clip_grad_norm_(generator.parameters(), max_norm=grad_clip)
             scaler_g.step(optim_g)
             scaler_g.update()
 
@@ -455,6 +460,10 @@ def train(args):
                     "loss/mel": loss_mel.item(),
                     "loss/fm": (loss_fm_mpd + loss_fm_msd).item(),
                     "loss/mastering_total": mastering_details.get("mastering_total", 0),
+                    "grad_norm/generator": grad_norm_g.item(),
+                    "grad_norm/discriminator": grad_norm_d.item(),
+                    "amp/scale_g": scaler_g.get_scale(),
+                    "amp/scale_d": scaler_d.get_scale(),
                 }
                 for k, v in mastering_details.items():
                     if k != "mastering_total":
@@ -501,8 +510,10 @@ def train(args):
 
     # Save final checkpoint
     elapsed = time.time() - train_start
+    # epoch may be unbound if start_epoch >= train_cfg["epochs"] (empty loop)
+    final_epoch = epoch if start_epoch < train_cfg["epochs"] else start_epoch - 1
     torch.save({
-        "epoch": epoch,
+        "epoch": final_epoch,
         "generator": generator.state_dict(),
         "mpd": mpd.state_dict(),
         "msd": msd.state_dict(),
@@ -514,10 +525,10 @@ def train(args):
         "scaler_d": scaler_d.state_dict(),
         "config": config,
     }, ckpt_dir / "latest.pt")
-    print(f"\nSaved final checkpoint (epoch {epoch})")
+    print(f"\nSaved final checkpoint (epoch {final_epoch})")
 
     writer.close()
-    print(f"Training complete! Total time: {elapsed / 3600:.1f}h, {epoch + 1} epochs")
+    print(f"Training complete! Total time: {elapsed / 3600:.1f}h")
 
 
 if __name__ == "__main__":

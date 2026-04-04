@@ -21,6 +21,8 @@ import gradio as gr
 import numpy as np
 import soundfile as sf
 
+from models.constants import INPUT_SAMPLE_RATE
+
 
 # ── Localization ──────────────────────────────────────────────────────────────
 
@@ -80,10 +82,10 @@ def _load_audio(path: str) -> tuple[np.ndarray, int]:
     # Last resort: ffmpeg to temp wav
     import subprocess, tempfile
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        subprocess.run(["ffmpeg", "-y", "-i", path, "-ar", "48000", "-ac", "2", tmp.name],
+        subprocess.run(["ffmpeg", "-y", "-i", path, "-ar", str(INPUT_SAMPLE_RATE), "-ac", "2", tmp.name],
                        capture_output=True, check=True)
         data, sr = sf.read(tmp.name, dtype="float32", always_2d=True)
-        import os; os.unlink(tmp.name)
+        os.unlink(tmp.name)
         return data, sr
 
 
@@ -257,10 +259,37 @@ def analyze_upscale_potential(path: str) -> dict:
 
     Tries to import from metrics.upscale_potential (Anton's module).
     Falls back to the built-in stub when the module is not available.
+
+    Always returns a flat dict compatible with the renderer:
+        upscale_potential_score, effective_sr, nominal_sr,
+        bandwidth_utilization, codec_artifacts_detected, likely_codec,
+        confidence, effective_bit_depth, declared_bit_depth, headroom_db,
+        rolloff_hz, nyquist_hz, gap_hz, gap_ratio
     """
     try:
         from metrics.upscale_potential import analyze_upscale_potential as _real
-        return _real(path)
+        raw = _real(path)
+        # Flatten Anton's nested structure into the flat dict the renderer expects
+        src = raw.get("sample_rate_ceiling", {})
+        cod = raw.get("codec_artifacts", {})
+        bd = raw.get("bit_depth_headroom", {})
+        gap = raw.get("spectral_gap", {})
+        return {
+            "upscale_potential_score": float(raw.get("composite_score", 0)),
+            "effective_sr": src.get("effective_sr", 0),
+            "nominal_sr": src.get("nominal_sr", 0),
+            "bandwidth_utilization": src.get("bandwidth_utilization", 0.0),
+            "codec_artifacts_detected": cod.get("codec_artifacts_detected", False),
+            "likely_codec": cod.get("likely_codec", "unknown"),
+            "confidence": cod.get("confidence", 0.0),
+            "effective_bit_depth": bd.get("effective_bit_depth", 0),
+            "declared_bit_depth": bd.get("declared_bit_depth", 0),
+            "headroom_db": bd.get("headroom_db", 0.0),
+            "rolloff_hz": round(float(gap.get("rolloff_hz", 0))),
+            "nyquist_hz": round(float(gap.get("nyquist_hz", 0))),
+            "gap_hz": round(float(gap.get("gap_hz", 0))),
+            "gap_ratio": gap.get("gap_ratio", 0.0),
+        }
     except ImportError:
         return _analyze_upscale_potential_stub(path)
 
@@ -331,7 +360,7 @@ def _convert_if_needed(path: str) -> str:
     # Convert via ffmpeg
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()
-    subprocess.run(["ffmpeg", "-y", "-i", path, "-ar", "48000", "-ac", "2", tmp.name],
+    subprocess.run(["ffmpeg", "-y", "-i", path, "-ar", str(INPUT_SAMPLE_RATE), "-ac", "2", tmp.name],
                    capture_output=True, check=True)
     return tmp.name
 
