@@ -126,6 +126,7 @@ gan:
     batch_size: 8           # RTX 3090: 8 is stable at 96kHz; reduce if OOM
     epochs: 200
     segment_length: 16384   # ~0.34s at 48kHz per training sample
+                            # Recommended next: 32768 (~0.68s) — better STFT resolution and dynamics loss accuracy
     lambda_fm: 2.0          # Feature matching weight
     lambda_stft: 45.0       # Multi-resolution STFT weight
     lambda_mel: 45.0        # Mel spectrogram weight
@@ -191,7 +192,7 @@ The resume logic loads model weights, optimizer states, scheduler states, and AM
 
 Note: checkpoint loading happens before `torch.compile`. If you try to load a compiled model's checkpoint into an uncompiled model (or vice versa), key names will mismatch. The code handles this by loading before compilation.
 
-The `_unwrap_state_dict` helper was added to `train.py` to strip the `_orig_mod.` key prefix that `torch.compile` injects into `model.state_dict()`. This ensures checkpoints can always be loaded into a non-compiled model on resume. **Important:** the checkpoint save paths should use `_unwrap_state_dict(generator)` instead of `generator.state_dict()` directly — verify this is in place before the next training run (tracked in task #16).
+The `_unwrap_state_dict` helper in `train.py` strips the `_orig_mod.` key prefix that `torch.compile` injects into `model.state_dict()`. This ensures checkpoints can always be loaded into a non-compiled model on resume. **This is already wired into all checkpoint save paths** (`train.py` lines 600-602, 625-627).
 
 ---
 
@@ -232,7 +233,7 @@ Validation metrics (logged every `checkpoint_interval` epochs):
 | 10+ | decreasing | decreasing | Should see gradual improvement |
 | 100+ | ~2-3 | ~15-25 | Model producing plausible HF content |
 
-If generator loss explodes (>100), check gradient clipping is active (`max_norm=10.0`). If NaN appears, check the mastering loss component — the `MasteringLoss` wrapper will log which component produced the NaN and skip it.
+If generator loss explodes (>100), check gradient clipping is active (`max_norm=5.0`, from `GRAD_CLIP_MAX_NORM` constant). If NaN appears, check the mastering loss component — the `MasteringLoss` wrapper will log which component produced the NaN and skip it.
 
 ---
 
@@ -321,3 +322,48 @@ Always upload your checkpoints to Google Drive before destroying the instance.
 **Dataset not found:**
 - Verify `--data_dir` contains `.wav`, `.flac`, `.aiff`, or `.aif` files
 - Check symlinks in `datasets/phase0_combined/` point to actual extracted directories
+
+---
+
+## Phase 1: Degradation Restoration Training
+
+Phase 1 fine-tunes the Phase 0 checkpoint to restore quality from degraded audio (codec artifacts, bad EQ, over-compression, stereo damage). The same HiFi-GAN generator is used — no architecture changes.
+
+### Phase 1 setup
+
+```bash
+# Resume from Phase 0 checkpoint with Phase 1 config
+python train.py \
+  --data_dir datasets/phase0_combined \
+  --config configs/phase1.yaml \
+  --checkpoint_dir checkpoints/phase1 \
+  --phase 1 \
+  --resume checkpoints/phase0/latest.pt \
+  --max-hours 5
+```
+
+The `--phase 1` flag:
+- Loads the Phase 1 degradation dataset (`data/dataset_phase1.py`)
+- Resets optimizer states (lower LR: 0.0001 from Phase 0's 0.0002)
+- Enables mixed batches: 80% degraded + 20% clean SR pairs (catastrophic forgetting prevention)
+- Activates `HighFrequencyBandLoss` (16–24 kHz) and increases `lambda_dynamics` to 15.0
+
+### Key differences from Phase 0
+
+| Parameter | Phase 0 | Phase 1 |
+|-----------|---------|---------|
+| Learning rate | 0.0002 | 0.0001 (reset) |
+| Dataset | Clean audio downsampled to 48kHz | Degraded 96kHz→48kHz + 20% clean SR |
+| `lambda_dynamics` | 5.0 | 15.0 (3× more) |
+| `HighFrequencyBandLoss` | off | on (16–24 kHz) |
+| Checkpoint resume | from scratch | from Phase 0 checkpoint (optimizer reset) |
+
+### Phase 1 monitoring
+
+Additional TensorBoard metrics logged in Phase 1:
+- `val/phase1/codec_si_snr` — SI-SNR on codec-degraded samples
+- `val/phase1/eq_si_snr` — SI-SNR on EQ-degraded samples
+- `val/phase1/compress_si_snr` — SI-SNR on over-compressed samples
+- `degradation/curriculum_severity` — current degradation severity (0→1 over training)
+
+See `docs/phase1_degradation_plan.md` for the full Phase 1 roadmap and implementation details.
