@@ -56,6 +56,9 @@ def _run_validation(generator, loader, device, writer, epoch, global_step, outpu
     si_snrs, sdrs = [], []
     cdpam_scores, audiobox_pqs = [], []
     chroma_sims, mfcc_sims = [], []
+    # SR-specific metrics
+    hf_energy_ratios_ref, hf_energy_ratios_enh = [], []
+    spectral_rolloffs_ref, spectral_rolloffs_enh = [], []
     val_samples = 4
 
     for i, (lr_audio, hr_audio) in enumerate(loader):
@@ -89,6 +92,32 @@ def _run_validation(generator, loader, device, writer, epoch, global_step, outpu
             torch.dot(ref, ref) / (torch.dot(noise, noise) + 1e-8) + 1e-8
         )
         sdrs.append(sdr_val.item())
+
+        # SR-specific metrics (computed on tensors, no file I/O)
+        try:
+            import librosa
+            ref_np = ref.numpy()
+            enh_np = enh.numpy()
+
+            # High-frequency energy ratio (energy above input_nyquist / total)
+            input_nyquist = output_sr // 4  # 48kHz input → 24kHz nyquist
+            S_ref = np.abs(librosa.stft(ref_np, n_fft=4096))
+            S_enh = np.abs(librosa.stft(enh_np, n_fft=4096))
+            freqs = librosa.fft_frequencies(sr=output_sr, n_fft=4096)
+            hf_mask = freqs >= input_nyquist
+
+            hf_ref = (S_ref[hf_mask] ** 2).sum() / (S_ref ** 2).sum() + 1e-10
+            hf_enh = (S_enh[hf_mask] ** 2).sum() / (S_enh ** 2).sum() + 1e-10
+            hf_energy_ratios_ref.append(float(hf_ref))
+            hf_energy_ratios_enh.append(float(hf_enh))
+
+            # Spectral rolloff (95%)
+            rolloff_ref = librosa.feature.spectral_rolloff(y=ref_np, sr=output_sr, roll_percent=0.95)[0].mean()
+            rolloff_enh = librosa.feature.spectral_rolloff(y=enh_np, sr=output_sr, roll_percent=0.95)[0].mean()
+            spectral_rolloffs_ref.append(float(rolloff_ref))
+            spectral_rolloffs_enh.append(float(rolloff_enh))
+        except Exception:
+            pass
 
         # File-based metrics (save to temp files)
         try:
@@ -156,6 +185,18 @@ def _run_validation(generator, loader, device, writer, epoch, global_step, outpu
         writer.add_scalar("val/mfcc_similarity", avg_mfcc, global_step)
         print(f"    Chroma:  {avg_chroma:.4f}")
         print(f"    MFCC:    {avg_mfcc:.4f}")
+    if hf_energy_ratios_enh:
+        avg_hf_ref = np.mean(hf_energy_ratios_ref)
+        avg_hf_enh = np.mean(hf_energy_ratios_enh)
+        avg_ro_ref = np.mean(spectral_rolloffs_ref)
+        avg_ro_enh = np.mean(spectral_rolloffs_enh)
+        writer.add_scalar("val/sr_hf_energy_ref", avg_hf_ref, global_step)
+        writer.add_scalar("val/sr_hf_energy_enh", avg_hf_enh, global_step)
+        writer.add_scalar("val/sr_hf_energy_ratio", avg_hf_enh / (avg_hf_ref + 1e-10), global_step)
+        writer.add_scalar("val/sr_rolloff_ref_hz", avg_ro_ref, global_step)
+        writer.add_scalar("val/sr_rolloff_enh_hz", avg_ro_enh, global_step)
+        print(f"    HF energy: ref={avg_hf_ref:.6f}, enh={avg_hf_enh:.6f} (ratio: {avg_hf_enh / (avg_hf_ref + 1e-10):.2f}x)")
+        print(f"    Rolloff:   ref={avg_ro_ref:.0f} Hz, enh={avg_ro_enh:.0f} Hz")
 
     generator.train()
 
