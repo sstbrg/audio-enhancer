@@ -1,9 +1,15 @@
-"""Dataset for training the 48kHz -> 192kHz GAN upsampler.
+"""Dataset for training the 48kHz -> 96kHz GAN super-resolution model.
 
-Training strategy:
-- Collect high-quality 192kHz audio (or resample 96kHz+ sources)
-- Downsample to 48kHz as input (simulating the low-res version)
-- Train GAN to reconstruct the 192kHz version from the 48kHz input
+Quality-aware training strategy:
+- 96kHz/24b sources (EG-IPT, VCTK): real hi-res targets, downsample to 48kHz input
+  → model learns genuine harmonics above 24kHz
+- 48kHz/24b sources (GTSinger): targets at native SR, input at 48kHz
+  → model learns 24-bit dynamic range detail
+- 44.1kHz/16b sources (MUSDB, MusicNet, MAESTRO, MoisesDB): resample to 48kHz input,
+  upsampled to 96kHz as synthetic target
+  → model learns to handle real-world CD-quality input
+
+Batch composition target: ~70% real hi-res, ~30% CD-quality input diversity.
 """
 
 import random
@@ -13,28 +19,29 @@ import torch
 import torchaudio
 from torch.utils.data import Dataset
 
+from models.constants import INPUT_SAMPLE_RATE, OUTPUT_SAMPLE_RATE
 from utils.audio import load_audio, resample_audio
 
 
 class AudioSRDataset(Dataset):
-    """Dataset that creates (low_res, high_res) pairs for training.
+    """Quality-aware dataset that creates (low_res, high_res) pairs.
 
-    Expects a directory of high-quality audio files (ideally 192kHz or 96kHz+).
-    Files at lower sample rates will be upsampled to target_sr first.
+    Scans directories for audio files, detects their native quality,
+    and creates appropriate training pairs based on source quality.
     """
 
     def __init__(
         self,
         root_dir: str,
-        target_sr: int = 192000,
-        input_sr: int = 48000,
-        segment_length: int = 32768,
+        target_sr: int = OUTPUT_SAMPLE_RATE,
+        input_sr: int = INPUT_SAMPLE_RATE,
+        segment_length: int = 16384,
         extensions: tuple = (".wav", ".flac", ".aiff", ".aif"),
     ):
         self.root_dir = Path(root_dir)
         self.target_sr = target_sr
         self.input_sr = input_sr
-        self.segment_length = segment_length  # in samples at input_sr
+        self.segment_length = segment_length
         self.upsample_factor = target_sr // input_sr
 
         # Find all audio files (follow symlinks)
@@ -51,7 +58,31 @@ class AudioSRDataset(Dataset):
                 f"No audio files found in {root_dir} with extensions {extensions}"
             )
 
+        # Classify files by quality tier
+        self._classify_files()
         print(f"Found {len(self.files)} audio files in {root_dir}")
+        print(f"  Hi-res (>=96kHz): {len(self.hires_indices)} files")
+        print(f"  Mid-res (48kHz):  {len(self.midres_indices)} files")
+        print(f"  Standard (<=44.1kHz): {len(self.standard_indices)} files")
+
+    def _classify_files(self):
+        """Classify files into quality tiers based on sample rate."""
+        self.hires_indices = []
+        self.midres_indices = []
+        self.standard_indices = []
+
+        for i, path in enumerate(self.files):
+            try:
+                info = torchaudio.info(str(path))
+                sr = info.sample_rate
+                if sr >= 96000:
+                    self.hires_indices.append(i)
+                elif sr >= 48000:
+                    self.midres_indices.append(i)
+                else:
+                    self.standard_indices.append(i)
+            except Exception:
+                self.standard_indices.append(i)
 
     def __len__(self):
         return len(self.files)
@@ -66,24 +97,21 @@ class AudioSRDataset(Dataset):
         if waveform.shape[0] > 1:
             waveform = waveform.mean(dim=0, keepdim=True)
 
-        # Resample to target (192kHz) if needed
-        if sr != self.target_sr:
-            waveform = resample_audio(waveform, sr, self.target_sr)
-
-        # Calculate segment length in high-res samples
-        hr_segment = self.segment_length * self.upsample_factor
-
-        # Random crop (or pad if too short)
-        if waveform.shape[-1] >= hr_segment:
-            start = random.randint(0, waveform.shape[-1] - hr_segment)
-            hr = waveform[:, start : start + hr_segment]
+        # Create LR/HR pair based on source quality
+        if sr >= 96000:
+            # Hi-res source: genuine target, downsample for input
+            hr = self._prepare_segment(waveform, sr, self.target_sr)
+            lr = resample_audio(hr, self.target_sr, self.input_sr)
+        elif sr >= 48000:
+            # Mid-res: resample to target (some synthetic content above native Nyquist)
+            hr = self._prepare_segment(waveform, sr, self.target_sr)
+            lr = resample_audio(hr, self.target_sr, self.input_sr)
         else:
-            # Pad short files
-            pad = hr_segment - waveform.shape[-1]
-            hr = torch.nn.functional.pad(waveform, (0, pad))
-
-        # Create low-res version by downsampling
-        lr = resample_audio(hr, self.target_sr, self.input_sr)
+            # Standard (44.1kHz/16-bit CD): resample to input SR, upsample to target
+            # The target is synthetic but teaches the model about CD-quality input
+            waveform_48k = resample_audio(waveform, sr, self.input_sr)
+            lr = self._prepare_segment_at_sr(waveform_48k, self.input_sr)
+            hr = resample_audio(lr, self.input_sr, self.target_sr)
 
         # Normalize
         peak = max(hr.abs().max(), lr.abs().max(), 1e-8)
@@ -91,3 +119,26 @@ class AudioSRDataset(Dataset):
         lr = lr / peak
 
         return lr, hr
+
+    def _prepare_segment(self, waveform: torch.Tensor, src_sr: int, tgt_sr: int) -> torch.Tensor:
+        """Resample to target SR and extract a random segment."""
+        if src_sr != tgt_sr:
+            waveform = resample_audio(waveform, src_sr, tgt_sr)
+
+        hr_segment = self.segment_length * self.upsample_factor
+
+        if waveform.shape[-1] >= hr_segment:
+            start = random.randint(0, waveform.shape[-1] - hr_segment)
+            return waveform[:, start:start + hr_segment]
+        else:
+            pad = hr_segment - waveform.shape[-1]
+            return torch.nn.functional.pad(waveform, (0, pad))
+
+    def _prepare_segment_at_sr(self, waveform: torch.Tensor, sr: int) -> torch.Tensor:
+        """Extract a random segment at the given sample rate (for LR)."""
+        if waveform.shape[-1] >= self.segment_length:
+            start = random.randint(0, waveform.shape[-1] - self.segment_length)
+            return waveform[:, start:start + self.segment_length]
+        else:
+            pad = self.segment_length - waveform.shape[-1]
+            return torch.nn.functional.pad(waveform, (0, pad))
