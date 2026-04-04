@@ -703,10 +703,11 @@ def _build_instance_html(inst: dict) -> str:
     else:
         cost_html = '<span class="muted">-</span>'
 
-    # Total spend: use client_run_time (age in hours) per Marina's guidance,
-    # not duration/uptime_mins which resets on restart
-    age_hours = inst.get("client_run_time")  # hours since instance was created
-    if dph_total is not None and age_hours is not None:
+    # Total spend: derive from start_date (Unix timestamp when billing began).
+    # client_run_time resets on restart; duration is host uptime — both unreliable.
+    start_date = inst.get("start_date")
+    if dph_total is not None and start_date is not None:
+        age_hours = (time.time() - start_date) / 3600
         spend_html = f"<b>${age_hours * dph_total:.2f}</b>"
     else:
         spend_html = '<span class="muted">-</span>'
@@ -745,21 +746,21 @@ def _build_instance_html(inst: dict) -> str:
     image       = inst.get("image_uuid", "")
 
     rows = [
-        (t("infra_status"),   _instance_status_badge(actual, cur)),
-        (t("infra_gpu_type"), gpu_label),
-        ("GPU Util",          gpu_util_html),
-        ("VRAM",              vram_html),
-        ("GPU Temp",          temp_html),
-        ("CPU Util",          cpu_html),
-        ("Disk",              disk_html),
-        ("Network",           net_html),
-        (t("infra_cost_hr"),  cost_html),
-        ("Total spend",       spend_html),
-        (t("infra_uptime"),   uptime_html),
-        (t("infra_ssh"),      ssh_html),
-        ("Instance ID",       f'<code>{iid}</code>'),
-        ("Location",          geolocation or '<span class="muted">-</span>'),
-        ("Image",             f'<span class="muted" style="font-size:0.8em">{image}</span>' if image else '<span class="muted">-</span>'),
+        (t("infra_status"),      _instance_status_badge(actual, cur)),
+        (t("infra_gpu_type"),    gpu_label),
+        (t("infra_gpu_util"),    gpu_util_html),
+        (t("infra_vram"),        vram_html),
+        (t("infra_gpu_temp"),    temp_html),
+        (t("infra_cpu_util"),    cpu_html),
+        (t("infra_disk"),        disk_html),
+        (t("infra_network"),     net_html),
+        (t("infra_cost_hr"),     cost_html),
+        (t("infra_total_spend"), spend_html),
+        (t("infra_uptime"),      uptime_html),
+        (t("infra_ssh"),         ssh_html),
+        (t("infra_instance_id"), f'<code>{iid}</code>'),
+        (t("infra_location"),    geolocation or '<span class="muted">-</span>'),
+        (t("infra_image"),       f'<span class="muted" style="font-size:0.8em">{image}</span>' if image else '<span class="muted">-</span>'),
     ]
 
     rows_html = "".join(

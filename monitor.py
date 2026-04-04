@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# DEPRECATED: Use infra/dashboard.py instead (superset of this file with
+# Checkpoints, Infrastructure tabs, and locale support).
 """Training and dataset monitoring dashboard.
 
 Usage:

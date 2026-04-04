@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Prepare training data for the 48kHz -> 192kHz GAN.
+"""Prepare training data for the 48kHz -> 96kHz GAN.
 
 This script helps you build a training dataset from your existing music collection.
-It scans for high-quality audio files and resamples them to 192kHz for training.
+It scans for high-quality audio files and resamples them to 96kHz for training.
 
 Sources of high-quality training data:
 - Hi-res audio files (96kHz, 176.4kHz, 192kHz, DSD)
@@ -11,7 +11,7 @@ Sources of high-quality training data:
 
 Usage:
     python prepare_dataset.py /path/to/music/collection /path/to/training/data
-    python prepare_dataset.py ~/Music ~/audio-enhancer/training_data --target-sr 192000
+    python prepare_dataset.py ~/Music ~/audio-enhancer/training_data --target-sr 96000
 """
 
 import argparse
@@ -75,8 +75,8 @@ def main():
     parser = argparse.ArgumentParser(description="Prepare training dataset")
     parser.add_argument("source", help="Source music directory")
     parser.add_argument("output", help="Output training data directory")
-    parser.add_argument("--target-sr", type=int, default=192000,
-                        help="Target sample rate (default: 192000)")
+    parser.add_argument("--target-sr", type=int, default=96000,
+                        help="Target sample rate (default: 96000)")
     parser.add_argument("--min-duration", type=float, default=10.0,
                         help="Minimum duration in seconds (default: 10)")
     parser.add_argument("--min-sr", type=int, default=44100,

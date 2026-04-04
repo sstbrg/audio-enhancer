@@ -11,6 +11,8 @@ Usage:
     python infra/datasets.py upload          — upload all to Google Drive
     python infra/datasets.py upload musdb    — upload one to Drive
     python infra/datasets.py pull            — pull all from Google Drive
+    python infra/datasets.py verify          — verify all dataset integrity
+    python infra/datasets.py verify musdb    — verify one dataset
 """
 
 import argparse
@@ -19,12 +21,20 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+import zipfile
+import tarfile
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 
 GDRIVE_DIR = "audio-enhancer-datasets"
 RAW_DIR = Path(os.environ.get("DATASETS_RAW", Path(__file__).resolve().parent.parent / "datasets" / "raw"))
+
+# Retry configuration
+DOWNLOAD_MAX_RETRIES = 3
+DOWNLOAD_RETRY_DELAY_S = 10
+RCLONE_RETRIES = 5  # passed to rclone --retries flag
 
 
 # ── Dataset catalog ───────────────────────────────────────────────────────────
@@ -33,21 +43,25 @@ RAW_DIR = Path(os.environ.get("DATASETS_RAW", Path(__file__).resolve().parent.pa
 class Dataset:
     id: str
     name: str
-    source: str          # "url", "huggingface", "python"
+    source: str          # "url", "huggingface", "python", "manual"
     location: str        # URL, HF repo, or python callable name
     expected_gb: float
     filename: str        # local filename or directory name
+    # Minimum expected file count after extraction (0 = skip file-count check)
+    min_files: int = 0
+    # Expected audio extensions for file-count check
+    audio_exts: tuple = field(default_factory=lambda: (".wav", ".flac", ".mp3", ".ogg"))
 
 CATALOG = [
     Dataset("egipt",    "EG-IPT (96kHz guitar)",      "url",
             "https://zenodo.org/records/15205644/files/EG-IPT.zip?download=1",
-            22, "EG-IPT.zip"),
+            22, "EG-IPT.zip", min_files=100),
     Dataset("musdb",    "MUSDB18-HQ (44.1kHz music)",  "url",
             "https://zenodo.org/records/3338373/files/musdb18hq.zip?download=1",
-            22, "musdb18hq.zip"),
+            22, "musdb18hq.zip", min_files=100),
     Dataset("vctk",     "VCTK 96kHz (speech)",         "url",
             "https://datashare.ed.ac.uk/bitstream/handle/10283/2774/VCTK-Corpus-0.92.zip?sequence=2&isAllowed=y",
-            20, "vctk96k.zip"),
+            20, "vctk96k.zip", min_files=40000),
     Dataset("moisesdb", "MoisesDB (music stems)",      "manual",
             "https://developer.moises.ai/research",
             88, "moisesdb.zip"),
@@ -56,13 +70,13 @@ CATALOG = [
             5, "gtsinger.tar.gz"),
     Dataset("maestro",  "MAESTRO v3 (piano)",          "url",
             "https://storage.googleapis.com/magentadata/datasets/maestro/v3.0.0/maestro-v3.0.0.zip",
-            101, "maestro-v3.0.0.zip"),
+            101, "maestro-v3.0.0.zip", min_files=1000),
     Dataset("medleydb", "MedleyDB v2 (pro recordings)","manual",
             "https://medleydb.weebly.com",
             30, "medleydb-v2.zip"),
     Dataset("musicnet", "MusicNet (classical)",        "url",
             "https://zenodo.org/records/5120004/files/musicnet.tar.gz?download=1",
-            11, "musicnet.tar.gz"),
+            11, "musicnet.tar.gz", min_files=300),
 ]
 
 CATALOG_MAP = {ds.id: ds for ds in CATALOG}
@@ -153,6 +167,128 @@ def progress_bar(pct: float, width: int = 20) -> str:
     return f"[{'#' * filled}{'-' * (width - filled)}]"
 
 
+def retry(fn, attempts: int = DOWNLOAD_MAX_RETRIES, delay: int = DOWNLOAD_RETRY_DELAY_S, label: str = ""):
+    """Run fn(), retrying on exception up to `attempts` times."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            if attempt == attempts:
+                raise
+            print(f"  {C_YELLOW}Attempt {attempt}/{attempts} failed: {exc}. Retrying in {delay}s...{C_NC}")
+            time.sleep(delay)
+
+
+# ── Verify ────────────────────────────────────────────────────────────────────
+
+def _count_audio_files(path: Path, exts: tuple) -> int:
+    """Count audio files recursively under path."""
+    if not path.exists():
+        return 0
+    return sum(1 for f in path.rglob("*") if f.suffix.lower() in exts and f.is_file())
+
+
+def _archive_is_valid(path: Path) -> Optional[str]:
+    """Return None if archive is valid, or an error string if corrupt."""
+    if not path.exists():
+        return "file not found"
+    if path.suffix == ".zip":
+        try:
+            with zipfile.ZipFile(path) as zf:
+                bad = zf.testzip()
+            if bad:
+                return f"corrupt member: {bad}"
+            return None
+        except zipfile.BadZipFile as e:
+            return str(e)
+    if path.suffix in (".gz", ".tgz") or path.name.endswith(".tar.gz"):
+        try:
+            with tarfile.open(path) as tf:
+                tf.getmembers()  # full member scan
+            return None
+        except tarfile.TarError as e:
+            return str(e)
+    # Unknown archive type — just check it's non-empty
+    if path.stat().st_size == 0:
+        return "file is empty"
+    return None
+
+
+def verify_one(ds: Dataset) -> bool:
+    """Check local file integrity. Returns True if OK."""
+    dest = local_path(ds)
+    expected_bytes = int(ds.expected_gb * (1 << 30))
+    current = local_size_bytes(ds)
+
+    print(f"\n  {C_BOLD}{ds.name}{C_NC}")
+
+    if current == 0:
+        if ds.source == "manual":
+            print(f"    {C_DIM}manual download — skipping{C_NC}")
+            return True
+        print(f"    {C_RED}not downloaded{C_NC}")
+        return False
+
+    # Size check (90% threshold)
+    pct = int(current * 100 / expected_bytes) if expected_bytes > 0 else 100
+    if current < expected_bytes * 0.9:
+        print(f"    {C_RED}partial: {human_size(current)} / ~{human_size(expected_bytes)} ({pct}%){C_NC}")
+        return False
+    print(f"    size: {human_size(current)} ({pct}% of expected) {C_GREEN}OK{C_NC}")
+
+    # Archive integrity check
+    if dest.is_file() and dest.suffix in (".zip", ".gz", ".tgz") or (
+            dest.is_file() and ".tar" in dest.name):
+        print(f"    checking archive integrity...")
+        err_msg = _archive_is_valid(dest)
+        if err_msg:
+            print(f"    {C_RED}archive corrupt: {err_msg}{C_NC}")
+            return False
+        print(f"    archive integrity {C_GREEN}OK{C_NC}")
+
+    # File count check (for extracted directories)
+    extracted_root = dest.parent.parent / "extracted" / dest.stem.split(".")[0]
+    if ds.min_files > 0 and extracted_root.exists():
+        count = _count_audio_files(extracted_root, ds.audio_exts)
+        if count < ds.min_files:
+            print(f"    {C_RED}extracted audio files: {count} < expected {ds.min_files}{C_NC}")
+            return False
+        print(f"    extracted audio files: {count} (>= {ds.min_files}) {C_GREEN}OK{C_NC}")
+    elif ds.min_files > 0 and dest.is_dir():
+        count = _count_audio_files(dest, ds.audio_exts)
+        if count < ds.min_files:
+            print(f"    {C_RED}audio files: {count} < expected {ds.min_files}{C_NC}")
+            return False
+        print(f"    audio files: {count} (>= {ds.min_files}) {C_GREEN}OK{C_NC}")
+
+    return True
+
+
+def verify_all() -> bool:
+    """Verify all datasets. Returns True if all pass."""
+    print(f"\n{C_BOLD}Verifying datasets...{C_NC}")
+    results = {}
+    for ds in CATALOG:
+        results[ds.id] = verify_one(ds)
+
+    print(f"\n{C_BOLD}Summary:{C_NC}")
+    all_ok = True
+    for ds in CATALOG:
+        ok = results[ds.id]
+        icon = f"{C_GREEN}PASS{C_NC}" if ok else f"{C_RED}FAIL{C_NC}"
+        if ds.source == "manual" and local_size_bytes(ds) == 0:
+            icon = f"{C_DIM}SKIP{C_NC}"
+        print(f"  {icon}  {ds.name}")
+        if not ok and ds.source != "manual":
+            all_ok = False
+
+    if all_ok:
+        print(f"\n{C_GREEN}All datasets OK{C_NC}")
+    else:
+        print(f"\n{C_RED}Some datasets failed verification — re-download them{C_NC}")
+    return all_ok
+
+
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
 C_RED = "\033[0;31m"
@@ -234,25 +370,29 @@ def download_one(ds: Dataset):
         print(f"  {C_GREEN}✓ {ds.name} already downloaded{C_NC}")
         return
 
-    print(f"  {C_BLUE}Downloading {ds.name}...{C_NC}")
+    print(f"  {C_BLUE}Downloading {ds.name} (~{ds.expected_gb}GB)...{C_NC}")
 
     if ds.source == "url":
-        subprocess.run([
-            "wget", "--tries=5", "--continue", "-q", "--show-progress",
-            "-O", str(dest), ds.location,
-        ], check=True)
+        def _wget():
+            subprocess.run([
+                "wget", "--tries=3", "--continue", "-q", "--show-progress",
+                "-O", str(dest), ds.location,
+            ], check=True)
+        retry(_wget, label=ds.name)
 
     elif ds.source == "huggingface":
-        from huggingface_hub import snapshot_download
-        snapshot_download(ds.location, repo_type="dataset", local_dir=str(dest))
+        def _hf():
+            from huggingface_hub import snapshot_download
+            snapshot_download(ds.location, repo_type="dataset", local_dir=str(dest))
+        retry(_hf, label=ds.name)
 
     elif ds.source == "manual":
-        print(f"  {C_RED}Manual download required: {ds.location}{C_NC}")
+        print(f"  {C_YELLOW}Manual download required: {ds.location}{C_NC}")
         return
 
     elif ds.source == "python":
         fn = CUSTOM_DOWNLOADERS[ds.location]
-        fn(dest)
+        retry(lambda: fn(dest), label=ds.name)
 
     print(f"  {C_GREEN}✓ {ds.name} downloaded{C_NC}")
 
@@ -278,10 +418,13 @@ def upload_one(ds: Dataset):
         return
 
     print(f"  {C_BLUE}Uploading {ds.name} to Drive...{C_NC}")
-    subprocess.run([
-        "rclone", "copy", str(src), f"gdrive:{GDRIVE_DIR}/",
-        "--progress", "--drive-chunk-size", "128M",
-    ], check=True)
+    def _upload():
+        subprocess.run([
+            "rclone", "copy", str(src), f"gdrive:{GDRIVE_DIR}/",
+            "--progress", "--drive-chunk-size", "128M",
+            "--retries", str(RCLONE_RETRIES),
+        ], check=True)
+    retry(_upload, label=ds.name)
     print(f"  {C_GREEN}✓ {ds.name} uploaded{C_NC}")
 
 
@@ -308,11 +451,13 @@ def pull_one(ds: Dataset):
         print(f"  {C_RED}✗ {ds.name} not on Drive{C_NC}")
         return
 
-    print(f"  {C_BLUE}Pulling {ds.name} from Drive...{C_NC}")
-    subprocess.run([
-        "rclone", "copy", f"gdrive:{GDRIVE_DIR}/{ds.filename}", str(RAW_DIR) + "/",
-        "--progress",
-    ], check=True)
+    print(f"  {C_BLUE}Pulling {ds.name} from Drive (~{ds.expected_gb}GB)...{C_NC}")
+    def _pull():
+        subprocess.run([
+            "rclone", "copy", f"gdrive:{GDRIVE_DIR}/{ds.filename}", str(RAW_DIR) + "/",
+            "--progress", "--retries", str(RCLONE_RETRIES),
+        ], check=True)
+    retry(_pull, label=ds.name)
     print(f"  {C_GREEN}✓ {ds.name} pulled{C_NC}")
 
 
@@ -331,7 +476,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Audio Enhancer dataset manager")
     parser.add_argument("command", nargs="?", default="status",
-                        choices=["status", "watch", "download", "upload", "pull", "help"])
+                        choices=["status", "watch", "download", "upload", "pull", "verify", "help"])
     parser.add_argument("dataset", nargs="?", default=None,
                         help=f"Dataset ID: {', '.join(ds.id for ds in CATALOG)}")
     args = parser.parse_args()
@@ -378,6 +523,18 @@ def main():
             pull_one(ds)
         else:
             pull_all()
+
+    elif args.command == "verify":
+        if args.dataset:
+            ds = CATALOG_MAP.get(args.dataset)
+            if not ds:
+                print(f"Unknown dataset: {args.dataset}")
+                sys.exit(1)
+            ok = verify_one(ds)
+            sys.exit(0 if ok else 1)
+        else:
+            ok = verify_all()
+            sys.exit(0 if ok else 1)
 
     elif args.command == "help":
         parser.print_help()

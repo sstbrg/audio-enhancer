@@ -24,67 +24,29 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-# ---------------------------------------------------------------------------
-# Constants — no magic numbers
-# ---------------------------------------------------------------------------
-
-# FFT parameters for spectral analysis
-FFT_N = 4096
-
-# Spread sampling: number of evenly-spaced FFT frames to draw from the whole file.
-# This gives a representative view of the file's bandwidth regardless of which
-# section happens to be quiet (e.g. a soft intro shouldn't skew results).
-SPREAD_SAMPLE_FRAMES = 20
-
-# Bit-depth analysis: cap at this many seconds to keep it fast
-BIT_DEPTH_MAX_SECONDS = 10.0
-
-# Sample-rate ceiling detection
-# Noise floor: a frequency bin is "active" when its mean power (across all sampled
-# frames) is above this fraction of the spectrum peak.
-NOISE_FLOOR_RATIO = 1e-4          # −40 dB below spectrum peak
-# Smoothing window (bins) applied to the mean power spectrum before ceiling detection
-ENERGY_SMOOTH_BINS = 20
-# Tolerance: if the detected ceiling is within this fraction of Nyquist, treat as full
-CEILING_TOLERANCE = 0.05          # 5 % of Nyquist
-
-# Codec artifact detection
-# Hard-cutoff: flag when energy drops by at least this many dB across a narrow band
-CODEC_CUTOFF_DROP_DB = 20.0
-# Candidate codec cutoff frequencies (Hz) for the hard-cutoff scan
-CODEC_CUTOFF_CANDIDATES_HZ = [11000, 15000, 16000, 18000, 19000, 20000, 22000]
-# Width of the band (Hz) used to measure energy on each side of a candidate cutoff
-CODEC_CUTOFF_BAND_HZ = 500
-# Pass-band must have at least this much energy (fraction of spectrum peak) for the
-# cutoff test to be meaningful
-CODEC_PASSBAND_MIN_RATIO = 1e-6
-# Pre-echo: analysis frame length in ms
-PRE_ECHO_WINDOW_MS = 20.0
-# Pre-echo: frame is suspicious when its energy exceeds this fraction of the
-# following transient frame's energy
-PRE_ECHO_RATIO_THRESHOLD = 0.15
-# How many pre-echo events must be found before flagging the file
-PRE_ECHO_MIN_EVENTS = 2
-# SBR (Spectral Band Replication): flag when correlation between the band below and
-# the band above the cutoff exceeds this value
-SBR_CORRELATION_THRESHOLD = 0.80
-
-# Bit-depth headroom
-# Candidate container depths to probe (ascending order)
-CANDIDATE_BIT_DEPTHS = [8, 16, 20, 24, 32]
-# A depth is considered "insufficient" (signal spills into next depth) when the
-# quantisation residual power / total power exceeds this threshold
-BIT_DEPTH_RESIDUAL_THRESHOLD = 1e-9
-
-# Spectral rolloff vs Nyquist gap
-# Fraction of cumulative spectral energy used to locate the rolloff frequency
-ROLLOFF_PERCENT = 0.99   # 99 % catches the true high-frequency content
-
-# Composite score weights (must sum to 1.0)
-WEIGHT_SR_CEILING = 0.35
-WEIGHT_CODEC = 0.25
-WEIGHT_BIT_DEPTH = 0.15
-WEIGHT_GAP = 0.25
+from models.constants import (
+    UPSCALE_BIT_DEPTH_MAX_SECONDS as BIT_DEPTH_MAX_SECONDS,
+    UPSCALE_BIT_DEPTH_RESIDUAL_THRESHOLD as BIT_DEPTH_RESIDUAL_THRESHOLD,
+    UPSCALE_CANDIDATE_BIT_DEPTHS as CANDIDATE_BIT_DEPTHS,
+    UPSCALE_CEILING_TOLERANCE as CEILING_TOLERANCE,
+    UPSCALE_CODEC_CUTOFF_BAND_HZ as CODEC_CUTOFF_BAND_HZ,
+    UPSCALE_CODEC_CUTOFF_CANDIDATES_HZ as CODEC_CUTOFF_CANDIDATES_HZ,
+    UPSCALE_CODEC_CUTOFF_DROP_DB as CODEC_CUTOFF_DROP_DB,
+    UPSCALE_CODEC_PASSBAND_MIN_RATIO as CODEC_PASSBAND_MIN_RATIO,
+    UPSCALE_ENERGY_SMOOTH_BINS as ENERGY_SMOOTH_BINS,
+    UPSCALE_FFT_N as FFT_N,
+    UPSCALE_NOISE_FLOOR_RATIO as NOISE_FLOOR_RATIO,
+    UPSCALE_PRE_ECHO_MIN_EVENTS as PRE_ECHO_MIN_EVENTS,
+    UPSCALE_PRE_ECHO_RATIO_THRESHOLD as PRE_ECHO_RATIO_THRESHOLD,
+    UPSCALE_PRE_ECHO_WINDOW_MS as PRE_ECHO_WINDOW_MS,
+    UPSCALE_ROLLOFF_PERCENT as ROLLOFF_PERCENT,
+    UPSCALE_SBR_CORRELATION_THRESHOLD as SBR_CORRELATION_THRESHOLD,
+    UPSCALE_SPREAD_SAMPLE_FRAMES as SPREAD_SAMPLE_FRAMES,
+    UPSCALE_WEIGHT_BIT_DEPTH as WEIGHT_BIT_DEPTH,
+    UPSCALE_WEIGHT_CODEC as WEIGHT_CODEC,
+    UPSCALE_WEIGHT_GAP as WEIGHT_GAP,
+    UPSCALE_WEIGHT_SR_CEILING as WEIGHT_SR_CEILING,
+)
 
 
 # ---------------------------------------------------------------------------

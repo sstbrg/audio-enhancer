@@ -11,6 +11,12 @@ Quality-aware training strategy:
 
 Batch composition is controlled by ``quality_sampling`` weights in the training config
 (phase0.yaml).  Default: 70% hi-res, 20% mid-res, 10% standard.
+
+CD-quality degradation (optional, configured via ``degradation`` in training config):
+- Applied on top of the normal pair creation with configurable probability.
+- Simulates CD-quality input: downsample to 44.1kHz, requantise to 16-bit with TPDF
+  dither, then resample back to 48kHz.  The high-res target is unchanged so the model
+  learns to recover the lost information.
 """
 
 import random
@@ -20,8 +26,83 @@ import soundfile as sf
 import torch
 from torch.utils.data import Dataset
 
-from models.constants import INPUT_SAMPLE_RATE, OUTPUT_SAMPLE_RATE
+from models.constants import (
+    CD_BIT_DEPTH,
+    CD_DITHER_AMPLITUDE,
+    CD_SAMPLE_RATE,
+    INPUT_SAMPLE_RATE,
+    OUTPUT_SAMPLE_RATE,
+)
 from utils.audio import load_audio, resample_audio
+
+
+def _quantize_to_bit_depth(
+    waveform: torch.Tensor, bit_depth: int, dither_amplitude: float
+) -> torch.Tensor:
+    """Quantise a float waveform to ``bit_depth`` bits with TPDF dither.
+
+    The signal is assumed to be in [-1, 1].  TPDF (triangular probability
+    density function) dither is added before rounding to reduce quantisation
+    distortion.  Output is returned as float32 in [-1, 1].
+
+    Args:
+        waveform: Float tensor of shape (channels, samples) in [-1, 1].
+        bit_depth: Target integer bit depth (e.g. 16).
+        dither_amplitude: Dither amplitude in LSBs (0.5 = TPDF standard).
+
+    Returns:
+        Quantised waveform as float32 in [-1, 1].
+    """
+    levels = 2 ** (bit_depth - 1)   # 32768 for 16-bit
+    lsb = 1.0 / levels               # value of one LSB in float space
+
+    # TPDF dither: sum of two independent uniform random variables (each ±0.5 LSB)
+    dither = (
+        torch.rand_like(waveform) - 0.5
+        + torch.rand_like(waveform) - 0.5
+    ) * dither_amplitude * lsb
+
+    quantised = torch.round((waveform + dither) * levels) / levels
+    return quantised.clamp(-1.0, 1.0)
+
+
+def _apply_cd_degradation(
+    waveform: torch.Tensor,
+    current_sr: int,
+    input_sr: int,
+    cd_sr: int = CD_SAMPLE_RATE,
+    bit_depth: int = CD_BIT_DEPTH,
+    dither_amplitude: float = CD_DITHER_AMPLITUDE,
+) -> torch.Tensor:
+    """Simulate CD-quality degradation on a waveform already at ``current_sr``.
+
+    Steps:
+    1. Downsample to ``cd_sr`` (44.1 kHz) — loses content above 22.05 kHz.
+    2. Quantise to ``bit_depth`` (16-bit) with TPDF dither.
+    3. Resample back to ``input_sr`` (48 kHz) — the bandwidth cap stays.
+
+    Args:
+        waveform: Float tensor (channels, samples) at ``current_sr``.
+        current_sr: Sample rate of the incoming waveform (typically 48000).
+        input_sr: Target sample rate for the LR input to the model (48000).
+        cd_sr: Intermediate CD sample rate (44100).
+        bit_depth: Quantisation bit depth (16).
+        dither_amplitude: TPDF dither amplitude in LSBs.
+
+    Returns:
+        Degraded waveform at ``input_sr``.
+    """
+    # Step 1: downsample to CD SR
+    degraded = resample_audio(waveform, current_sr, cd_sr)
+
+    # Step 2: 16-bit quantisation with dither
+    degraded = _quantize_to_bit_depth(degraded, bit_depth, dither_amplitude)
+
+    # Step 3: resample back to model input SR
+    if cd_sr != input_sr:
+        degraded = resample_audio(degraded, cd_sr, input_sr)
+
+    return degraded
 
 
 class AudioSRDataset(Dataset):
@@ -29,6 +110,22 @@ class AudioSRDataset(Dataset):
 
     Scans directories for audio files, detects their native quality,
     and creates appropriate training pairs based on source quality.
+
+    Optional CD-quality degradation can be applied to the LR input with a
+    configurable probability, teaching the model to handle sources that have
+    been through CD encoding (44.1 kHz / 16-bit quantisation).
+
+    Args:
+        root_dir: Root directory to scan for audio files.
+        target_sr: High-res target sample rate (default OUTPUT_SAMPLE_RATE).
+        input_sr: Low-res input sample rate (default INPUT_SAMPLE_RATE).
+        segment_length: Number of LR samples per training segment.
+        extensions: Audio file extensions to scan for.
+        degradation_prob: Probability [0, 1] of applying CD degradation to the
+            LR input.  0.0 disables degradation (default, backward-compatible).
+        degradation_cd_sr: CD intermediate sample rate for degradation.
+        degradation_bit_depth: Bit depth for quantisation step.
+        degradation_dither_amplitude: TPDF dither amplitude in LSBs.
     """
 
     def __init__(
@@ -38,12 +135,20 @@ class AudioSRDataset(Dataset):
         input_sr: int = INPUT_SAMPLE_RATE,
         segment_length: int = 16384,
         extensions: tuple = (".wav", ".flac", ".aiff", ".aif"),
+        degradation_prob: float = 0.0,
+        degradation_cd_sr: int = CD_SAMPLE_RATE,
+        degradation_bit_depth: int = CD_BIT_DEPTH,
+        degradation_dither_amplitude: float = CD_DITHER_AMPLITUDE,
     ):
         self.root_dir = Path(root_dir)
         self.target_sr = target_sr
         self.input_sr = input_sr
         self.segment_length = segment_length
         self.upsample_factor = target_sr // input_sr
+        self.degradation_prob = degradation_prob
+        self.degradation_cd_sr = degradation_cd_sr
+        self.degradation_bit_depth = degradation_bit_depth
+        self.degradation_dither_amplitude = degradation_dither_amplitude
 
         # Find all audio files (follow symlinks)
         import glob
@@ -65,6 +170,11 @@ class AudioSRDataset(Dataset):
         print(f"  Hi-res (>=96kHz): {len(self.hires_indices)} files")
         print(f"  Mid-res (48kHz):  {len(self.midres_indices)} files")
         print(f"  Standard (<=44.1kHz): {len(self.standard_indices)} files")
+        if self.degradation_prob > 0.0:
+            print(
+                f"  CD degradation: prob={self.degradation_prob:.2f}, "
+                f"cd_sr={self.degradation_cd_sr}, bit_depth={self.degradation_bit_depth}"
+            )
 
     def get_sample_weights(
         self,
@@ -143,6 +253,19 @@ class AudioSRDataset(Dataset):
             waveform_48k = resample_audio(waveform, sr, self.input_sr)
             lr = self._prepare_segment_at_sr(waveform_48k, self.input_sr)
             hr = resample_audio(lr, self.input_sr, self.target_sr)
+
+        # Optional CD-quality degradation applied to LR only.
+        # HR target is intentionally left clean so the model learns to recover
+        # the bandwidth and dynamic range lost through CD encoding.
+        if self.degradation_prob > 0.0 and random.random() < self.degradation_prob:
+            lr = _apply_cd_degradation(
+                lr,
+                current_sr=self.input_sr,
+                input_sr=self.input_sr,
+                cd_sr=self.degradation_cd_sr,
+                bit_depth=self.degradation_bit_depth,
+                dither_amplitude=self.degradation_dither_amplitude,
+            )
 
         # Normalize
         peak = max(hr.abs().max(), lr.abs().max(), 1e-8)

@@ -36,6 +36,12 @@ infra/
   deploy.sh           # GCP deployment helper (kept for future use)
   main.tf             # Terraform config (GCP, kept for future use)
 third_party/          # (gitignored) PAM, MuQ-Eval clones
+docs/
+  ARCHITECTURE.md     # Detailed architecture: generator, discriminators, losses, data flow
+  training_guide.md   # Step-by-step: Vast.ai setup, datasets, training, monitoring
+  inference_guide.md  # enhance.py usage: formats, sample rate logic, batch processing
+  phase1_degradation_plan.md  # Phase 1 degradation pipeline plan
+ARCHITECTURE.md       # Quick architecture reference (diagrams)
 ```
 
 ## Training
@@ -75,7 +81,15 @@ Manual: MoisesDB (requested at developer.moises.ai), MedleyDB (requested at medl
 
 rclone config uses custom OAuth client ID (GCP project stoked-mapper-258810).
 
-## Analyzer GUI
+## Web UIs
+
+| App | Port | File | Description |
+|-----|------|------|-------------|
+| Analyzer UI | 7860 | analyzer_ui.py | Enhance + Analyze tabs, i18n EN/RU |
+| Monitor (deprecated) | 7861 | monitor.py | Superseded by infra/dashboard.py |
+| Dashboard | 7862 | infra/dashboard.py | Datasets, Training, Checkpoints, Infrastructure tabs, i18n EN/RU |
+
+### Analyzer GUI
 
 ```bash
 python analyzer_ui.py           # English, http://localhost:7860
@@ -84,6 +98,16 @@ python analyzer_ui.py --lang ru  # Russian
 
 Two tabs: Enhance (apply model) + Analyze (quality metrics).
 All strings from locale files, all styles in CSS. Supports wav/flac/mp3/ogg/webm.
+
+### Monitoring Dashboard
+
+```bash
+python infra/dashboard.py           # English, http://localhost:7862
+python infra/dashboard.py --lang ru  # Russian
+```
+
+Four tabs: Datasets (Drive sync status), Training (TensorBoard loss curves), Checkpoints (list of .pt files), Infrastructure (live Vast.ai GPU/cost/uptime via REST API + Google Drive reachability).
+Vast.ai API key read from `VAST_API_KEY` env var or `~/.config/vastai/vast_api_key`.
 
 ## Agent team
 

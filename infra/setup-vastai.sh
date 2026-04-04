@@ -1,46 +1,154 @@
 #!/bin/bash
 # One-command setup for a fresh Vast.ai instance.
 # Usage: ssh into instance, then:
-#   bash /workspace/audio-enhancer/infra/setup-vastai.sh [--from-gdrive]
+#   bash /workspace/audio-enhancer/infra/setup-vastai.sh [--from-gdrive] [--resume]
 #
-# --from-gdrive: download datasets from Google Drive (requires rclone config)
-# Without flag: download from Zenodo (first time only)
+# --from-gdrive : pull datasets and checkpoints from Google Drive (requires rclone config)
+# --resume      : auto-start training from latest checkpoint after setup
 set -euo pipefail
 
 PROJECT_DIR="/workspace/audio-enhancer"
+VENV="$PROJECT_DIR/.venv"
 RAW_DIR="$PROJECT_DIR/datasets/raw"
 EXTRACT_DIR="$PROJECT_DIR/datasets/extracted"
+CHECKPOINT_DIR="$PROJECT_DIR/checkpoints/phase0"
 GDRIVE_PATH="audio-enhancer-datasets"
+GDRIVE_CHECKPOINTS="$GDRIVE_PATH/checkpoints"
+CONFIG="$PROJECT_DIR/configs/phase0.yaml"
+DATA_DIR="$PROJECT_DIR/datasets/phase0_combined"
+MIN_DISK_GB=50
+MIN_CUDA_GB=20
+
+# Parse flags
+OPT_GDRIVE=0
+OPT_RESUME=0
+for arg in "$@"; do
+    case "$arg" in
+        --from-gdrive) OPT_GDRIVE=1 ;;
+        --resume)      OPT_RESUME=1 ;;
+        *) echo "Unknown flag: $arg"; exit 1 ;;
+    esac
+done
+
+log()  { echo "[$(date '+%H:%M:%S')] $*"; }
+ok()   { echo "[$(date '+%H:%M:%S')] OK  $*"; }
+err()  { echo "[$(date '+%H:%M:%S')] ERR $*" >&2; }
+die()  { err "$*"; exit 1; }
 
 echo "=== Audio Enhancer — Vast.ai Setup ==="
+log "Project: $PROJECT_DIR"
+log "Flags: gdrive=$OPT_GDRIVE resume=$OPT_RESUME"
 
-# System deps
-echo "[1/5] Installing system packages..."
-apt-get update -qq && apt-get install -y -qq libsndfile1 ffmpeg tmux unzip rclone > /dev/null 2>&1
+# ── [0] Health checks ─────────────────────────────────────────────────────────
 
-# Python deps
-echo "[2/5] Setting up Python environment..."
+log "[0/6] Running health checks..."
+
+# GPU check
+if ! command -v nvidia-smi &>/dev/null; then
+    die "nvidia-smi not found. Is this a GPU instance?"
+fi
+GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
+GPU_MEM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | tr -d ' ')
+GPU_MEM_GB=$(( GPU_MEM_MB / 1024 ))
+log "GPU: $GPU_NAME (${GPU_MEM_GB}GB)"
+if (( GPU_MEM_GB < MIN_CUDA_GB )); then
+    err "Warning: GPU has only ${GPU_MEM_GB}GB VRAM, recommend >= ${MIN_CUDA_GB}GB for batch_size=8"
+fi
+
+# Disk space check
+DISK_FREE_GB=$(df -BG "$PROJECT_DIR" | tail -1 | awk '{print $4}' | tr -d 'G')
+log "Disk free: ${DISK_FREE_GB}GB"
+if (( DISK_FREE_GB < MIN_DISK_GB )); then
+    die "Insufficient disk space: ${DISK_FREE_GB}GB free, need at least ${MIN_DISK_GB}GB"
+fi
+
+ok "Health checks passed"
+
+# ── [1] System deps ───────────────────────────────────────────────────────────
+
+log "[1/6] Installing system packages..."
+apt-get update -qq
+apt-get install -y -qq libsndfile1 ffmpeg tmux unzip rclone bc > /dev/null 2>&1
+ok "System packages installed"
+
+# ── [2] Python venv ───────────────────────────────────────────────────────────
+
+log "[2/6] Setting up Python environment..."
 cd "$PROJECT_DIR"
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip -q
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128 -q 2>&1 | tail -1
-pip install -r requirements.txt -q 2>&1 | tail -1
-pip install numpy soundfile librosa scipy tqdm pyyaml tensorboard gdown -q 2>&1 | tail -1
 
-# Download datasets
-echo "[3/5] Getting datasets..."
+# Create venv only if it doesn't exist or is broken
+if [ -f "$VENV/bin/python" ]; then
+    if "$VENV/bin/python" -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)" 2>/dev/null; then
+        ok "Existing venv looks good, skipping creation"
+    else
+        log "Existing venv has wrong Python version, recreating..."
+        rm -rf "$VENV"
+    fi
+fi
+
+if [ ! -f "$VENV/bin/python" ]; then
+    python3 -m venv "$VENV"
+    log "Created new venv at $VENV"
+fi
+
+source "$VENV/bin/activate"
+pip install --upgrade pip -q
+
+# Install PyTorch (CUDA 12.8)
+if ! python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+    log "Installing PyTorch with CUDA 12.8..."
+    pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128 -q 2>&1 | tail -3
+else
+    ok "PyTorch already installed with CUDA"
+fi
+
+# Install project requirements
+if [ -f "$PROJECT_DIR/requirements.txt" ]; then
+    pip install -r "$PROJECT_DIR/requirements.txt" -q 2>&1 | tail -3
+fi
+# Core deps that may not be in requirements.txt
+pip install numpy soundfile librosa scipy tqdm pyyaml tensorboard -q 2>&1 | tail -1
+
+# Validate venv
+python -c "
+import torch, torchaudio, numpy, soundfile, yaml
+print(f'  PyTorch {torch.__version__}')
+print(f'  torchaudio {torchaudio.__version__}')
+cuda_ok = torch.cuda.is_available()
+print(f'  CUDA: {cuda_ok}')
+if cuda_ok:
+    print(f'  CUDA device: {torch.cuda.get_device_name(0)}')
+    mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    print(f'  VRAM: {mem_gb:.1f}GB')
+assert cuda_ok, 'CUDA not available after setup!'
+"
+ok "Python environment validated"
+
+# ── [3] rclone config check ───────────────────────────────────────────────────
+
+if (( OPT_GDRIVE )); then
+    log "[3/6] Checking rclone config..."
+    if [ ! -f ~/.config/rclone/rclone.conf ]; then
+        die "rclone not configured. Run 'rclone config' to set up gdrive remote first."
+    fi
+    if ! rclone lsf "gdrive:$GDRIVE_PATH/" --max-depth 1 &>/dev/null; then
+        die "Cannot access gdrive:$GDRIVE_PATH/ — check rclone config and Drive permissions."
+    fi
+    ok "rclone gdrive access confirmed"
+else
+    log "[3/6] Skipping rclone check (--from-gdrive not set)"
+fi
+
+# ── [4] Datasets ──────────────────────────────────────────────────────────────
+
+log "[4/6] Setting up datasets..."
 mkdir -p "$RAW_DIR" "$EXTRACT_DIR"
 
-if [ "${1:-}" = "--from-gdrive" ]; then
-    echo "  Downloading from Google Drive..."
-    if [ ! -f ~/.config/rclone/rclone.conf ]; then
-        echo "  ERROR: rclone not configured. Run 'rclone config' first."
-        exit 1
-    fi
-    rclone copy "gdrive:$GDRIVE_PATH/" "$RAW_DIR/" --progress
+if (( OPT_GDRIVE )); then
+    log "  Pulling datasets from Google Drive..."
+    python "$PROJECT_DIR/infra/datasets.py" pull
 else
-    echo "  Downloading from Zenodo (first time)..."
+    log "  Downloading core datasets from Zenodo..."
     cd "$RAW_DIR"
     [ -f EG-IPT.zip ] || wget -q --show-progress -O EG-IPT.zip \
         "https://zenodo.org/records/15205644/files/EG-IPT.zip?download=1" &
@@ -49,41 +157,127 @@ else
     wait
 fi
 
-echo "  Raw datasets:"
-ls -lh "$RAW_DIR/"
-
-# Extract
-echo "[4/5] Extracting..."
-if [ ! -d "$EXTRACT_DIR/EG-IPT" ]; then
+# Extract datasets
+if [ ! -d "$EXTRACT_DIR/EG-IPT" ] && [ -f "$RAW_DIR/EG-IPT.zip" ]; then
+    log "  Extracting EG-IPT..."
     unzip -q "$RAW_DIR/EG-IPT.zip" -d "$EXTRACT_DIR/EG-IPT"
-    echo "  Extracted EG-IPT"
+    ok "  EG-IPT extracted"
 else
-    echo "  EG-IPT already extracted"
+    [ -d "$EXTRACT_DIR/EG-IPT" ] && ok "  EG-IPT already extracted"
 fi
 
-if [ ! -d "$EXTRACT_DIR/musdb18hq" ]; then
+if [ ! -d "$EXTRACT_DIR/musdb18hq" ] && [ -f "$RAW_DIR/musdb18hq.zip" ]; then
+    log "  Extracting MUSDB18-HQ..."
     unzip -q "$RAW_DIR/musdb18hq.zip" -d "$EXTRACT_DIR/musdb18hq"
-    echo "  Extracted MUSDB18-HQ"
+    ok "  MUSDB18-HQ extracted"
 else
-    echo "  MUSDB18-HQ already extracted"
+    [ -d "$EXTRACT_DIR/musdb18hq" ] && ok "  MUSDB18-HQ already extracted"
 fi
 
-# Symlink for training
-mkdir -p "$PROJECT_DIR/datasets/phase0_combined"
-ln -sf "$EXTRACT_DIR/EG-IPT" "$PROJECT_DIR/datasets/phase0_combined/EG-IPT"
-ln -sf "$EXTRACT_DIR/musdb18hq" "$PROJECT_DIR/datasets/phase0_combined/musdb18hq"
+# Symlinks for training
+mkdir -p "$DATA_DIR"
+for name in EG-IPT musdb18hq; do
+    if [ -d "$EXTRACT_DIR/$name" ] && [ ! -L "$DATA_DIR/$name" ]; then
+        ln -sf "$EXTRACT_DIR/$name" "$DATA_DIR/$name"
+        log "  Linked $name into phase0_combined"
+    fi
+done
 
-# Verify
-echo "[5/5] Verifying..."
-source "$PROJECT_DIR/.venv/bin/activate"
-python3 -c "
+ok "Datasets ready"
+
+# ── [5] Checkpoints ───────────────────────────────────────────────────────────
+
+log "[5/6] Checking checkpoints..."
+mkdir -p "$CHECKPOINT_DIR"
+
+if (( OPT_GDRIVE )); then
+    log "  Pulling checkpoints from Google Drive..."
+    if rclone lsf "gdrive:$GDRIVE_CHECKPOINTS/" --max-depth 1 &>/dev/null; then
+        rclone copy "gdrive:$GDRIVE_CHECKPOINTS/" "$CHECKPOINT_DIR/" --progress
+        ok "  Checkpoints pulled"
+        # Show what we have
+        if [ -f "$CHECKPOINT_DIR/latest.pt" ]; then
+            CKPT_SIZE=$(du -sh "$CHECKPOINT_DIR/latest.pt" | cut -f1)
+            ok "  latest.pt ($CKPT_SIZE) ready for resume"
+        fi
+    else
+        log "  No checkpoints on Drive yet (first run)"
+    fi
+else
+    log "  Skipping checkpoint pull (--from-gdrive not set)"
+fi
+
+ok "Checkpoint setup done"
+
+# ── [6] Final validation ──────────────────────────────────────────────────────
+
+log "[6/6] Final validation..."
+source "$VENV/bin/activate"
+python -c "
 import torch
-print(f'PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}')
-if torch.cuda.is_available():
-    print(f'GPU: {torch.cuda.get_device_name(0)}')
+import sys
+from pathlib import Path
+
+project = Path('$PROJECT_DIR')
+ok = True
+
+# Check CUDA
+if not torch.cuda.is_available():
+    print('  FAIL: CUDA not available')
+    ok = False
+else:
+    print(f'  PASS: CUDA — {torch.cuda.get_device_name(0)}')
+
+# Check data dir has content
+data_dir = project / 'datasets/phase0_combined'
+if data_dir.exists():
+    entries = list(data_dir.iterdir())
+    print(f'  PASS: data dir has {len(entries)} entries')
+else:
+    print('  WARN: datasets/phase0_combined not found — training will need data')
+
+# Check config
+config = project / 'configs/phase0.yaml'
+if config.exists():
+    print(f'  PASS: config {config.name} found')
+else:
+    print(f'  FAIL: config {config} missing')
+    ok = False
+
+# Check for latest checkpoint
+ckpt = project / 'checkpoints/phase0/latest.pt'
+if ckpt.exists():
+    print(f'  PASS: latest.pt checkpoint found — training will resume')
+else:
+    print('  INFO: No latest.pt — training will start from scratch')
+
+if not ok:
+    sys.exit(1)
 "
+
 echo ""
 echo "=== Setup complete ==="
-echo "To train:"
+echo ""
+echo "To start training manually:"
 echo "  cd $PROJECT_DIR && source .venv/bin/activate"
-echo "  python train.py --data_dir datasets/phase0_combined --config configs/phase0.yaml --checkpoint_dir checkpoints/phase0 --max-hours 5"
+RESUME_FLAG=""
+if [ -f "$CHECKPOINT_DIR/latest.pt" ]; then
+    RESUME_FLAG=" --resume $CHECKPOINT_DIR/latest.pt"
+fi
+echo "  python train.py \\"
+echo "    --data_dir $DATA_DIR \\"
+echo "    --config $CONFIG \\"
+echo "    --checkpoint_dir $CHECKPOINT_DIR \\"
+echo "    --max-hours 5$RESUME_FLAG"
+echo ""
+echo "Or run the full automated workflow:"
+echo "  bash $PROJECT_DIR/infra/auto_train.sh"
+
+# ── Auto-resume training if requested ─────────────────────────────────────────
+
+if (( OPT_RESUME )); then
+    log "Auto-resume requested, launching training in tmux session 'train'..."
+    tmux new-session -d -s train \
+        "cd $PROJECT_DIR && source .venv/bin/activate && bash infra/auto_train.sh 2>&1 | tee /tmp/train.log"
+    log "Training started in tmux session 'train'. Attach with: tmux attach -t train"
+fi

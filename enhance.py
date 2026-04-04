@@ -11,7 +11,7 @@ Usage:
     # Full pipeline (requires trained GAN checkpoint):
     python enhance.py input.mp3 -o output.wav --gan_checkpoint checkpoints/latest.pt
 
-    # Without custom GAN (uses high-quality resampling for 48k->192k):
+    # Without custom GAN (uses high-quality resampling for 48k->96k):
     python enhance.py input.mp3 -o output.wav
 
     # Skip Apollo (input is already lossless):
@@ -81,7 +81,12 @@ class AudioEnhancer:
             resblock_dilation_sizes=gen_cfg["resblock_dilation_sizes"],
         ).to(self.device)
 
-        self.gan_model.load_state_dict(ckpt["generator"])
+        # Strip _orig_mod. prefix from keys saved by torch.compile'd models
+        state_dict = ckpt["generator"]
+        cleaned = {}
+        for k, v in state_dict.items():
+            cleaned[k.replace("_orig_mod.", "")] = v
+        self.gan_model.load_state_dict(cleaned)
         self.gan_model.eval()
         self.gan_model.remove_weight_norm()
         print("GAN loaded.")
@@ -175,7 +180,7 @@ class AudioEnhancer:
         if pipeline["audiosr"] and sr < 48000:
             waveform, sr = self._run_audiosr(input_path, waveform, sr)
 
-        # ---- Stage 3: GAN upsample (48kHz -> 192kHz) ----
+        # ---- Stage 3: GAN upsample (48kHz -> target SR) ----
         if pipeline["gan_upsample"] and self.gan_model is not None:
             waveform, sr = self._run_gan(waveform, sr)
         elif sr < target_sr:
@@ -265,7 +270,7 @@ class AudioEnhancer:
         return waveform, 48000
 
     def _run_gan(self, waveform: torch.Tensor, sr: int) -> tuple[torch.Tensor, int]:
-        """Stage 3: GAN upsampling to 192kHz."""
+        """Stage 3: GAN upsampling to target sample rate."""
         target_sr = self.config["output"]["sample_rate"]
         print(f"  Stage 3: GAN upsample {sr} Hz -> {target_sr} Hz...")
 
@@ -373,7 +378,7 @@ class AudioEnhancer:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Enhance audio to 192kHz/32-bit using AI",
+        description="Enhance audio to 96kHz/24-bit using AI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("input", help="Input audio file or directory")
