@@ -4,7 +4,7 @@
 Downloads from various sources, uploads to Google Drive, pulls to new instances.
 
 Usage:
-    python infra/datasets.py status          — show dashboard
+    python infra/datasets.py status          — show dashboard (includes codec variants)
     python infra/datasets.py watch           — live dashboard (refreshes every 5s)
     python infra/datasets.py download        — download all datasets
     python infra/datasets.py download egipt  — download one dataset
@@ -13,10 +13,17 @@ Usage:
     python infra/datasets.py pull            — pull all from Google Drive
     python infra/datasets.py verify          — verify all dataset integrity
     python infra/datasets.py verify musdb    — verify one dataset
+
+Phase 1 codec variants:
+    python infra/datasets.py push-codec-variants [--from-dir DIR]
+                                               — upload pre-computed codec WAVs to Drive
+    python infra/datasets.py pull-codec-variants [--to-dir DIR]
+                                               — pull codec WAVs from Drive
 """
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -29,7 +36,23 @@ from typing import Optional
 
 
 GDRIVE_DIR = "audio-enhancer-datasets"
-RAW_DIR = Path(os.environ.get("DATASETS_RAW", Path(__file__).resolve().parent.parent / "datasets" / "raw"))
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+RAW_DIR = Path(os.environ.get("DATASETS_RAW", PROJECT_DIR / "datasets" / "raw"))
+
+# Phase 1: pre-computed codec variant storage
+# Local:  datasets/codec_variants/<dataset_name>/
+# Drive:  gdrive:audio-enhancer-datasets/codec_variants/
+CODEC_VARIANTS_DIR = Path(os.environ.get(
+    "CODEC_VARIANTS_DIR",
+    PROJECT_DIR / "datasets" / "codec_variants",
+))
+GDRIVE_CODEC_VARIANTS = f"{GDRIVE_DIR}/codec_variants"
+
+# Phase 1 combined training dir (symlinks clean audio + codec variants)
+PHASE1_COMBINED_DIR = Path(os.environ.get(
+    "PHASE1_COMBINED_DIR",
+    PROJECT_DIR / "datasets" / "phase1_combined",
+))
 
 # Retry configuration
 DOWNLOAD_MAX_RETRIES = 3
@@ -358,6 +381,26 @@ def show_status():
           f"{C_BOLD}Disk free:{C_NC} {human_size(disk_free)}")
     print(f"{C_BOLD}{'=' * 78}{C_NC}")
 
+    # Phase 1 codec variants status
+    local_count = codec_variants_local_count(PHASE1_COMBINED_DIR)
+    on_drive = codec_variants_on_drive()
+    drive_str = f"{C_GREEN}yes{C_NC}" if on_drive else f"{C_DIM} - {C_NC}"
+    local_str = f"{local_count} files" if local_count > 0 else f"{C_DIM}-{C_NC}"
+    print(f"\n  {C_BOLD}Phase 1 — Codec Variants{C_NC}")
+    print(f"  {'Local':<12} {'Drive':>5}  {'Notes':<30}")
+    print(f"  {'-' * 12} {'-' * 5}  {'-' * 30}")
+    notes = ""
+    if local_count == 0 and not on_drive:
+        notes = f"{C_DIM}run precompute_codecs.py first{C_NC}"
+    elif local_count == 0:
+        notes = f"{C_GREEN}ready to pull from Drive{C_NC}"
+    elif not on_drive:
+        notes = f"{C_YELLOW}not on Drive yet (run push-codec-variants){C_NC}"
+    else:
+        notes = f"{C_GREEN}synced{C_NC}"
+    print(f"  {local_str:<12} {drive_str:>5}  {notes}")
+    print(f"{C_BOLD}{'=' * 78}{C_NC}")
+
 
 # ── Download ──────────────────────────────────────────────────────────────────
 
@@ -469,6 +512,115 @@ def pull_all():
             print(f"  {C_RED}✗ {ds.name}: {e}{C_NC}")
 
 
+# ── Codec variants (Phase 1) ──────────────────────────────────────────────────
+
+# Pre-computed codec variant filename pattern: *_mp3_128.wav, *_aac_256.wav, etc.
+_CODEC_VARIANT_RE = re.compile(r"_(mp3|aac|ogg)_(\d+)\.wav$", re.IGNORECASE)
+
+# rclone include patterns for codec variant files
+_CODEC_VARIANT_INCLUDES = ["*_mp3_*.wav", "*_aac_*.wav", "*_ogg_*.wav"]
+
+
+def codec_variants_local_count(directory: Path) -> int:
+    """Count pre-computed codec variant WAVs in directory (recursively)."""
+    if not directory.exists():
+        return 0
+    return sum(1 for p in directory.rglob("*.wav") if _CODEC_VARIANT_RE.search(p.name))
+
+
+def codec_variants_on_drive() -> bool:
+    """Return True if codec_variants folder exists and has content on Drive."""
+    try:
+        result = subprocess.run(
+            ["rclone", "lsf", f"gdrive:{GDRIVE_CODEC_VARIANTS}/", "--max-depth", "1"],
+            capture_output=True, text=True, timeout=15,
+        )
+        return result.returncode == 0 and result.stdout.strip() != ""
+    except Exception:
+        return False
+
+
+def push_codec_variants(source_dir: Optional[Path] = None):
+    """Upload codec variant WAV files from source_dir to Google Drive.
+
+    Only files matching the *_{codec}_{bitrate}.wav naming convention produced by
+    data/precompute_codecs.py are uploaded.  Directory structure is preserved so
+    that pull_codec_variants() restores files to the correct locations.
+
+    Args:
+        source_dir: Directory tree to scan.  Defaults to PHASE1_COMBINED_DIR.
+    """
+    source_dir = source_dir or PHASE1_COMBINED_DIR
+    if not source_dir.exists():
+        print(f"  {C_RED}✗ Source dir {source_dir} does not exist{C_NC}")
+        print(f"  {C_DIM}Run: python data/precompute_codecs.py --input <data_dir>{C_NC}")
+        return
+
+    count = codec_variants_local_count(source_dir)
+    if count == 0:
+        print(f"  {C_YELLOW}No codec variant files found in {source_dir}{C_NC}")
+        print(f"  {C_DIM}Run: python data/precompute_codecs.py --input {source_dir}{C_NC}")
+        return
+
+    print(f"  {C_BLUE}Uploading {count} codec variant files from {source_dir}...{C_NC}")
+    include_flags: list[str] = []
+    for pat in _CODEC_VARIANT_INCLUDES:
+        include_flags += ["--include", pat]
+
+    def _upload():
+        subprocess.run(
+            [
+                "rclone", "copy", str(source_dir),
+                f"gdrive:{GDRIVE_CODEC_VARIANTS}/",
+                *include_flags,
+                "--progress",
+                "--drive-chunk-size", "64M",
+                "--retries", str(RCLONE_RETRIES),
+            ],
+            check=True,
+        )
+
+    retry(_upload, label="codec_variants")
+    print(f"  {C_GREEN}✓ Codec variants uploaded → gdrive:{GDRIVE_CODEC_VARIANTS}/{C_NC}")
+
+
+def pull_codec_variants(dest_dir: Optional[Path] = None):
+    """Pull codec variant files from Drive into dest_dir.
+
+    Files are written preserving the directory structure stored on Drive, so they
+    land alongside their corresponding clean audio files -- ready for
+    DegradedAudioDataset (data/dataset_phase1.py).
+
+    Args:
+        dest_dir: Local destination directory.  Defaults to PHASE1_COMBINED_DIR.
+    """
+    dest_dir = dest_dir or PHASE1_COMBINED_DIR
+
+    if not codec_variants_on_drive():
+        print(f"  {C_RED}✗ No codec variants on Drive (gdrive:{GDRIVE_CODEC_VARIANTS}/){C_NC}")
+        print(f"  {C_DIM}Upload first: python infra/datasets.py push-codec-variants{C_NC}")
+        return
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  {C_BLUE}Pulling codec variants → {dest_dir}...{C_NC}")
+
+    def _pull():
+        subprocess.run(
+            [
+                "rclone", "copy",
+                f"gdrive:{GDRIVE_CODEC_VARIANTS}/",
+                str(dest_dir) + "/",
+                "--progress",
+                "--retries", str(RCLONE_RETRIES),
+            ],
+            check=True,
+        )
+
+    retry(_pull, label="codec_variants")
+    count = codec_variants_local_count(dest_dir)
+    print(f"  {C_GREEN}✓ {count} codec variant files pulled → {dest_dir}{C_NC}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -476,9 +628,16 @@ def main():
 
     parser = argparse.ArgumentParser(description="Audio Enhancer dataset manager")
     parser.add_argument("command", nargs="?", default="status",
-                        choices=["status", "watch", "download", "upload", "pull", "verify", "help"])
+                        choices=[
+                            "status", "watch", "download", "upload", "pull", "verify",
+                            "push-codec-variants", "pull-codec-variants", "help",
+                        ])
     parser.add_argument("dataset", nargs="?", default=None,
                         help=f"Dataset ID: {', '.join(ds.id for ds in CATALOG)}")
+    parser.add_argument("--from-dir", type=Path, default=None,
+                        help="Source directory for push-codec-variants (default: PHASE1_COMBINED_DIR)")
+    parser.add_argument("--to-dir", type=Path, default=None,
+                        help="Destination directory for pull-codec-variants (default: PHASE1_COMBINED_DIR)")
     args = parser.parse_args()
 
     if args.command == "status":
@@ -535,6 +694,12 @@ def main():
         else:
             ok = verify_all()
             sys.exit(0 if ok else 1)
+
+    elif args.command == "push-codec-variants":
+        push_codec_variants(source_dir=args.from_dir)
+
+    elif args.command == "pull-codec-variants":
+        pull_codec_variants(dest_dir=args.to_dir)
 
     elif args.command == "help":
         parser.print_help()
