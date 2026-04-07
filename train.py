@@ -164,7 +164,7 @@ def _run_validation(generator, loader, device, writer, epoch, global_step, outpu
             enh_np = enh.numpy()
 
             # High-frequency energy ratio (energy above input_nyquist / total)
-            input_nyquist = output_sr // 4  # 48kHz input → 24kHz nyquist
+            input_nyquist = INPUT_SAMPLE_RATE // 2  # 48kHz input → 24kHz nyquist
             S_ref = np.abs(librosa.stft(ref_np, n_fft=4096))
             S_enh = np.abs(librosa.stft(enh_np, n_fft=4096))
             freqs = librosa.fft_frequencies(sr=output_sr, n_fft=4096)
@@ -184,44 +184,51 @@ def _run_validation(generator, loader, device, writer, epoch, global_step, outpu
             pass
 
         # File-based metrics (save to temp files)
+        ref_path = None
+        enh_path = None
         try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f_ref, \
-                 tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f_enh:
-                sf.write(f_ref.name, ref.numpy(), output_sr)
-                sf.write(f_enh.name, enh.numpy(), output_sr)
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f_ref:
+                ref_path = f_ref.name
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f_enh:
+                enh_path = f_enh.name
 
-                from metrics.evaluate import AudioMetrics
-                metrics = AudioMetrics(device=str(device))
+            sf.write(ref_path, ref.numpy(), output_sr)
+            sf.write(enh_path, enh.numpy(), output_sr)
 
-                # CDPAM
-                try:
-                    cdpam = metrics.cdpam_score(f_ref.name, f_enh.name)
-                    if not np.isnan(cdpam.score):
-                        cdpam_scores.append(cdpam.score)
-                except Exception:
-                    pass
+            from metrics.evaluate import AudioMetrics
+            metrics = AudioMetrics(device=str(device))
 
-                # Audiobox PQ (no-reference on enhanced)
-                try:
-                    ab = metrics.audiobox_aesthetics(f_enh.name)
-                    if isinstance(ab.score, dict) and "PQ" in ab.score:
-                        audiobox_pqs.append(ab.score["PQ"])
-                except Exception:
-                    pass
+            # CDPAM
+            try:
+                cdpam = metrics.cdpam_score(ref_path, enh_path)
+                if not np.isnan(cdpam.score):
+                    cdpam_scores.append(cdpam.score)
+            except Exception:
+                pass
 
-                # Content preservation
-                try:
-                    chroma = metrics.chroma_similarity(f_ref.name, f_enh.name)
-                    mfcc = metrics.mfcc_similarity(f_ref.name, f_enh.name)
-                    chroma_sims.append(chroma.score)
-                    mfcc_sims.append(mfcc.score)
-                except Exception:
-                    pass
+            # Audiobox PQ (no-reference on enhanced)
+            try:
+                ab = metrics.audiobox_aesthetics(enh_path)
+                if isinstance(ab.score, dict) and "PQ" in ab.score:
+                    audiobox_pqs.append(ab.score["PQ"])
+            except Exception:
+                pass
 
-                os.unlink(f_ref.name)
-                os.unlink(f_enh.name)
+            # Content preservation
+            try:
+                chroma = metrics.chroma_similarity(ref_path, enh_path)
+                mfcc = metrics.mfcc_similarity(ref_path, enh_path)
+                chroma_sims.append(chroma.score)
+                mfcc_sims.append(mfcc.score)
+            except Exception:
+                pass
         except Exception:
             pass
+        finally:
+            if ref_path:
+                Path(ref_path).unlink(missing_ok=True)
+            if enh_path:
+                Path(enh_path).unlink(missing_ok=True)
 
     # Log all metrics
     print(f"\n  Validation (epoch {epoch}):")
@@ -384,7 +391,7 @@ def train(args):
     # _orig_mod.* key prefix mismatches in state_dict loading.
     start_epoch = 0
     if args.resume:
-        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        ckpt = torch.load(args.resume, map_location=device, weights_only=True)
         try:
             generator.load_state_dict(ckpt["generator"])
         except RuntimeError as e:
@@ -549,7 +556,7 @@ def train(args):
 
             if not g_step_skipped:
                 scaler_g.step(optim_g)
-            scaler_g.update()
+                scaler_g.update()
 
             # Update EMA (only on non-spike steps to avoid poisoning the tracker)
             if not g_step_skipped:
@@ -618,8 +625,7 @@ def train(args):
 
     # Save final checkpoint
     elapsed = time.time() - train_start
-    # epoch may be unbound if start_epoch >= train_cfg["epochs"] (empty loop)
-    final_epoch = epoch if start_epoch < train_cfg["epochs"] else start_epoch - 1
+    final_epoch = locals().get("epoch", start_epoch - 1)
     torch.save({
         "epoch": final_epoch,
         "generator": _unwrap_state_dict(generator),

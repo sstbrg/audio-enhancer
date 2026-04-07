@@ -73,3 +73,48 @@ UPSCALE_WEIGHT_GAP = 0.25
 UPSCALE_SCORE_HIGH = 70     # score >= HIGH  → "high potential"
 UPSCALE_SCORE_MEDIUM = 40   # score >= MEDIUM → "medium potential"
 UPSCALE_SCORE_LOW = 10      # score >= LOW   → "low potential" (else "already optimal")
+
+# ── Phase 1: Degradation constants ──────────────────────────────────────────
+
+# Codec types and bitrate ranges (kbps)
+CODEC_TYPES = ["mp3", "aac", "ogg", "opus", "wma"]
+CODEC_BITRATE_RANGES = {
+    "mp3": [64, 96, 128, 160, 192, 256, 320],
+    "aac": [64, 96, 128, 160, 192, 256],
+    "ogg": [64, 96, 128, 160, 192, 256, 320],
+    "opus": [32, 48, 64, 96, 128],
+    "wma": [96, 128, 192],
+}
+CODEC_DOUBLE_ENCODE_PROB = 0.05  # Probability of double-encoding
+
+# EQ degradation ranges
+EQ_FREQ_RANGE = (60.0, 16000.0)   # Hz, log-distributed
+EQ_GAIN_RANGE = (-12.0, 12.0)     # dB
+EQ_Q_RANGE = (0.3, 8.0)
+EQ_BANDS_RANGE = (2, 5)           # Number of parametric EQ bands
+EQ_RESONANT_Q_RANGE = (6.0, 12.0)
+EQ_RESONANT_GAIN_RANGE = (6.0, 15.0)  # dB
+
+# Dynamic compression
+COMP_THRESHOLD_RANGE = (-20.0, -6.0)   # dBFS
+COMP_RATIO_RANGE = (4.0, 20.0)
+COMP_ATTACK_RANGE = (0.1, 5.0)         # ms
+COMP_RELEASE_RANGE = (50.0, 500.0)     # ms
+
+# Clipping
+CLIP_HARD_THRESHOLD_RANGE = (0.3, 0.95)
+CLIP_SOFT_GAIN_RANGE = (1.5, 5.0)
+
+# Sample rate / bit depth degradation
+DEGRADED_SAMPLE_RATES = [22050, 32000, 44100]
+DEGRADED_BIT_DEPTHS = [8, 16]
+
+# Noise floor levels (dBFS)
+NOISE_LEVEL_RANGE = (-40.0, -20.0)
+HUM_FREQ_OPTIONS = [50.0, 60.0]  # Mains frequencies (EU/US)
+HUM_HARMONICS = 5                 # Number of harmonics to include
+
+# Stereo damage
+STEREO_WIDTH_RANGE = (0.0, 0.6)       # Width factor for narrowing
+STEREO_DELAY_RANGE = (0.0, 2.0)       # ms, per-channel delay
+STEREO_CROSSTALK_RANGE = (0.05, 0.3)  # Fraction of channel mixed

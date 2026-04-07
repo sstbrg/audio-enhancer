@@ -34,6 +34,7 @@ import numpy as np
 import torch
 import yaml
 
+from models.constants import INPUT_SAMPLE_RATE, OUTPUT_SAMPLE_RATE
 from utils.audio import load_audio, save_audio, resample_audio, get_audio_info
 
 
@@ -70,7 +71,7 @@ class AudioEnhancer:
         from models.generator import Generator
 
         print(f"Loading GAN from {checkpoint_path}...")
-        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
 
         gen_cfg = ckpt["config"]["gan"]["generator"]
         self.gan_model = Generator(
@@ -266,18 +267,18 @@ class AudioEnhancer:
         else:
             waveform = waveform_48k.squeeze(0).float()
 
-        print("  AudioSR complete (48kHz).")
-        return waveform, 48000
+        print(f"  AudioSR complete ({INPUT_SAMPLE_RATE}Hz).")
+        return waveform, INPUT_SAMPLE_RATE
 
     def _run_gan(self, waveform: torch.Tensor, sr: int) -> tuple[torch.Tensor, int]:
         """Stage 3: GAN upsampling to target sample rate."""
         target_sr = self.config["output"]["sample_rate"]
         print(f"  Stage 3: GAN upsample {sr} Hz -> {target_sr} Hz...")
 
-        # Ensure input is at 48kHz for the GAN
-        if sr != 48000:
-            waveform = resample_audio(waveform, sr, 48000)
-            sr = 48000
+        # Ensure input is at expected rate for the GAN
+        if sr != INPUT_SAMPLE_RATE:
+            waveform = resample_audio(waveform, sr, INPUT_SAMPLE_RATE)
+            sr = INPUT_SAMPLE_RATE
 
         channels = waveform.shape[0]
         output_channels = []

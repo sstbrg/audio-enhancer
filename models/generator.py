@@ -141,9 +141,9 @@ class Generator(nn.Module):
 
         assert len(self.resblocks) % self.num_upsamples == 0, (
             f"Number of resblocks ({len(self.resblocks)}) must be evenly divisible "
-            f"by num_upsamples ({self.num_upsamples}). Got "
-            f"{len(resblock_kernel_sizes)} resblock kernels × {self.num_upsamples} "
-            f"upsample stages = {len(self.resblocks)} resblocks total."
+            f"by num_upsamples ({self.num_upsamples}). "
+            f"resblocks = {len(resblock_kernel_sizes)} kernels × "
+            f"{self.num_upsamples} upsample stages."
         )
         self.n_resblocks = len(self.resblocks) // self.num_upsamples
 

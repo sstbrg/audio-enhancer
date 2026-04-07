@@ -88,11 +88,12 @@ class MultiResolutionSTFTLoss(nn.Module):
     def __init__(self):
         super().__init__()
         # Multiple resolutions capture different time-frequency trade-offs
+        # Consistent ratios: hop = fft_size // 4, win = fft_size // 2
         self.stft_losses = nn.ModuleList([
-            STFTLoss(512, 50, 240),
-            STFTLoss(1024, 120, 600),
-            STFTLoss(2048, 240, 1200),
-            STFTLoss(4096, 480, 2400),
+            STFTLoss(512, 128, 256),
+            STFTLoss(1024, 256, 512),
+            STFTLoss(2048, 512, 1024),
+            STFTLoss(4096, 1024, 2048),
         ])
 
     def forward(self, y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:

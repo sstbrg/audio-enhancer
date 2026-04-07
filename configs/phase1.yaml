@@ -1,0 +1,92 @@
+# Phase 1: Degradation Restoration
+# ==================================
+# Goal: Teach the model to restore quality from degraded audio
+# (codec artifacts, bad EQ, over-compression, stereo damage, noise).
+# Fine-tunes from Phase 0 checkpoint with lower learning rate.
+
+# Pipeline stages
+pipeline:
+  apollo: true
+  audiosr: true
+  gan_upsample: true
+
+# Output settings
+output:
+  sample_rate: 96000
+  bit_depth: 24
+  format: wav
+
+# AudioSR settings
+audiosr:
+  model_name: basic
+  ddim_steps: 50
+  guidance_scale: 3.5
+
+# GAN settings (same architecture as Phase 0)
+gan:
+  generator:
+    channels: 512
+    upsample_rates: [2]
+    upsample_kernel_sizes: [4]
+    resblock_kernel_sizes: [3, 7, 11]
+    resblock_dilation_sizes: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
+
+  discriminator:
+    periods: [2, 3, 5, 7, 11, 17, 23]
+    scales: 3
+
+  training:
+    batch_size: 8
+    learning_rate_g: 0.0001     # Lower LR for fine-tuning from Phase 0
+    learning_rate_d: 0.0001
+    betas: [0.8, 0.99]
+    epochs: 200
+    segment_length: 16384
+    lambda_fm: 2.0
+    lambda_mel: 45.0
+    lambda_stft: 45.0
+    grad_clip_norm: 5.0
+    checkpoint_interval: 1
+    log_interval: 50
+
+    # Resume from Phase 0 checkpoint
+    pretrained_checkpoint: "checkpoints/phase0/latest.pt"
+
+    # Phase 0 SR pair mixing: 20% of batch uses clean (48k, 96k) pairs
+    # to prevent catastrophic forgetting of super-resolution ability
+    phase0_mix_ratio: 0.2
+
+    # Equal quality sampling for Phase 1 (all tiers equally valuable)
+    quality_sampling:
+      weight_hires: 1.0
+      weight_midres: 1.0
+      weight_standard: 1.0
+
+    mastering:
+      lambda_perceptual_stft: 45.0
+      lambda_stereo: 10.0
+      lambda_dynamics: 8.0      # Higher weight: dynamics restoration is key for Phase 1
+      lambda_encodec: 0.01
+      lambda_audiobox_pq: 0.0
+      lambda_clap: 0.0
+
+    # Degradation pipeline configuration
+    degradation:
+      # Probability of each degradation category being applied
+      p_codec: 0.6
+      p_eq: 0.4
+      p_compression: 0.3
+      p_stereo: 0.2
+      p_clipping: 0.15
+      p_sample_rate: 0.2
+      p_noise: 0.25
+
+      # Max degradations per chain
+      max_chain_length: 3
+
+      # Curriculum learning schedule
+      curriculum:
+        enabled: true
+        warmup_epochs: 20       # Mild severity only
+        linear_ramp_epochs: 80  # Linearly increase to full severity
+        # After warmup + ramp (epoch 100+): full random severity
