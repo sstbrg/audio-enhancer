@@ -150,6 +150,10 @@ Generator Loss = adversarial + feature_matching + spectral + mastering
 │     → neural perceptual quality in Meta's space          │
 │     → differentiable (gradients flow through encoder)    │
 ├─────────────────────────────────────────────────────────┤
+│ Phase 1 only (zero weight in Phase 0):                   │
+│   HF Band Loss (16-24 kHz energy diff)       λ=10.0     │
+│     → penalizes codec-damaged high frequencies           │
+├─────────────────────────────────────────────────────────┤
 │ Validation only (not in backward pass):                  │
 │   Audiobox PQ, CLAP — not differentiable                │
 └─────────────────────────────────────────────────────────┘
@@ -160,7 +164,7 @@ Generator Loss = adversarial + feature_matching + spectral + mastering
 - **Mixed Precision (AMP):** float16 compute, float32 master weights
 - **torch.compile:** Fused kernels for generator + discriminators
 - **cudnn.benchmark:** Auto-tuned convolution algorithms
-- **Gradient clipping:** max_norm=10.0 on both G and D
+- **Gradient clipping:** max_norm=5.0 on both G and D (GRAD_CLIP_MAX_NORM from constants)
 - **DataLoader:** persistent_workers, prefetch_factor=4, num_workers=auto
 
 ## Validation Metrics
@@ -208,13 +212,17 @@ Discriminators judge: real or generated 96kHz?
 - **Status:** Epoch 0 complete. Losses stable: d≈4.2, g≈35. Encodec spikes resolved.
 - **Checkpoint:** `gdrive:audio-enhancer-datasets/checkpoints/checkpoint_0000.pt`
 - **AMP + torch.compile:** Committed and ready; not yet validated in a full training run.
-- **Pending fix:** `_unwrap_state_dict` helper in `train.py` must be wired into all checkpoint save paths before the next run (see `docs/training_guide.md` for details).
+- **`_unwrap_state_dict`:** Done — wired into all checkpoint save paths in `train.py`.
 
-### Phase 1 — Degradation Restoration (planned)
+### Phase 1 — Degradation Restoration (implementation in progress)
 
-- **Goal:** Restore lossy-compressed / poorly mastered audio using (degraded, clean) training pairs
-- **Plan:** `docs/phase1_degradation_plan.md`
-- **Status:** Planning complete; implementation not started.
+- **Goal:** Restore lossy-compressed / poorly mastered audio; simultaneously upscale to 96kHz
+- **Architecture:** Same 48kHz→96kHz HiFi-GAN generator. Degradation applied at 96kHz, downsampled to 48kHz for model input; clean 96kHz is the target.
+- **Fine-tuning:** From Phase 0 checkpoint; optimizer reset; lower LR (0.0001); 5-epoch linear warmup.
+- **Mixed batches:** 20% Phase 0 SR pairs per batch (prevents catastrophic forgetting).
+- **Loss changes:** `lambda_dynamics=15.0` (3× Phase 0); new `HighFrequencyBandLoss` (16–24 kHz, λ=10.0).
+- **Config:** `configs/phase1.yaml`. Recipe: `docs/phase1_finetuning_recipe.md`.
+- **Status:** Core files done (degradations.py, degradation_chain.py, dataset_phase1.py, precompute_codecs.py, configs/phase1.yaml, train.py --phase flag). First training run pending.
 
 ### Phase 2 — Full Pipeline (planned)
 
