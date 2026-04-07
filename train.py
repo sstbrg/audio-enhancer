@@ -29,6 +29,7 @@ from tqdm import tqdm
 from data.dataset import AudioSRDataset
 from models import (
     Generator,
+    HighFrequencyBandLoss,
     MultiPeriodDiscriminator,
     MultiScaleDiscriminator,
     discriminator_loss,
@@ -290,16 +291,30 @@ def train(args):
 
     # Dataset
     deg_cfg = train_cfg.get("degradation", {})
-    dataset = AudioSRDataset(
-        root_dir=args.data_dir,
-        target_sr=output_sr,
-        input_sr=INPUT_SAMPLE_RATE,
-        segment_length=train_cfg["segment_length"],
-        degradation_prob=deg_cfg.get("prob", 0.0),
-        degradation_cd_sr=deg_cfg.get("cd_sr", CD_SAMPLE_RATE),
-        degradation_bit_depth=deg_cfg.get("bit_depth", CD_BIT_DEPTH),
-        degradation_dither_amplitude=deg_cfg.get("dither_amplitude", CD_DITHER_AMPLITUDE),
-    )
+    phase = getattr(args, "phase", 0)
+
+    if phase == 1:
+        from data.dataset_phase1 import DegradedAudioDataset
+        dataset = DegradedAudioDataset(
+            root_dir=args.data_dir,
+            target_sr=output_sr,
+            input_sr=INPUT_SAMPLE_RATE,
+            segment_length=train_cfg["segment_length"],
+            degradation_config=deg_cfg,
+            phase0_mix_ratio=train_cfg.get("phase0_mix_ratio", 0.2),
+        )
+        print(f"Phase 1: degradation restoration mode (phase0_mix={train_cfg.get('phase0_mix_ratio', 0.2):.0%})")
+    else:
+        dataset = AudioSRDataset(
+            root_dir=args.data_dir,
+            target_sr=output_sr,
+            input_sr=INPUT_SAMPLE_RATE,
+            segment_length=train_cfg["segment_length"],
+            degradation_prob=deg_cfg.get("prob", 0.0),
+            degradation_cd_sr=deg_cfg.get("cd_sr", CD_SAMPLE_RATE),
+            degradation_bit_depth=deg_cfg.get("bit_depth", CD_BIT_DEPTH),
+            degradation_dither_amplitude=deg_cfg.get("dither_amplitude", CD_DITHER_AMPLITUDE),
+        )
 
     # DataLoader: use WeightedRandomSampler when quality_sampling is configured,
     # otherwise fall back to plain shuffle so the interface stays backward-compatible.
@@ -323,18 +338,48 @@ def train(args):
     else:
         loader_kwargs = dict(shuffle=True)
 
+    # Train/val split (hold out 5% for validation, min 4 samples)
+    val_size = max(4, int(len(dataset) * 0.05))
+    train_size = len(dataset) - val_size
+    train_dataset, val_dataset = torch.utils.data.random_split(
+        dataset, [train_size, val_size],
+        generator=torch.Generator().manual_seed(42),
+    )
+
     num_workers = min(os.cpu_count() or 4, 8)
+
+    # Training loader uses quality-weighted sampling on the train split
+    if qs_cfg:
+        # Remap weights to the train subset indices
+        train_weights = [sample_weights[i] for i in train_dataset.indices]
+        train_sampler = WeightedRandomSampler(
+            weights=train_weights,
+            num_samples=len(train_dataset),
+            replacement=True,
+        )
+        train_loader_kwargs = dict(sampler=train_sampler, shuffle=False)
+    else:
+        train_loader_kwargs = dict(shuffle=True)
+
     loader = DataLoader(
-        dataset,
+        train_dataset,
         batch_size=train_cfg["batch_size"],
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
         persistent_workers=True,
         prefetch_factor=4,
-        **loader_kwargs,
+        **train_loader_kwargs,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=train_cfg["batch_size"],
+        num_workers=2,
+        pin_memory=True,
+        drop_last=False,
     )
     print(f"DataLoader: batch_size={train_cfg['batch_size']}, workers={num_workers}")
+    print(f"Split: {train_size} train, {val_size} val")
 
     # Models
     gen_cfg = gan_cfg["generator"]
@@ -357,6 +402,15 @@ def train(args):
     # Losses
     stft_loss_fn = MultiResolutionSTFTLoss().to(device)
     mel_loss_fn = MelSpectrogramLoss(sample_rate=output_sr).to(device)
+
+    # HF band loss (Phase 1 only — targets 16-24kHz codec artifact restoration)
+    hf_band_loss_fn = None
+    lambda_hf_band = 0.0
+    if phase == 1:
+        from models.constants import LAMBDA_HF_BAND_DEFAULT
+        hf_band_loss_fn = HighFrequencyBandLoss(sample_rate=output_sr).to(device)
+        lambda_hf_band = train_cfg.get("mastering", {}).get("lambda_hf_band", LAMBDA_HF_BAND_DEFAULT)
+        print(f"Phase 1: HF band loss enabled (lambda={lambda_hf_band})")
 
     # Mastering quality losses
     mastering_cfg = train_cfg.get("mastering", {})
@@ -386,6 +440,19 @@ def train(args):
     # LR schedulers
     sched_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=LR_SCHEDULER_GAMMA)
     sched_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=LR_SCHEDULER_GAMMA)
+
+    # Phase 1: load pretrained Phase 0 weights (model weights only, fresh optimizers)
+    pretrained = train_cfg.get("pretrained_checkpoint")
+    if phase == 1 and pretrained and not args.resume:
+        print(f"Phase 1: loading pretrained weights from {pretrained}")
+        ckpt = torch.load(pretrained, map_location=device, weights_only=True)
+        cleaned = {k.removeprefix("_orig_mod."): v for k, v in ckpt["generator"].items()}
+        generator.load_state_dict(cleaned)
+        cleaned = {k.removeprefix("_orig_mod."): v for k, v in ckpt["mpd"].items()}
+        mpd.load_state_dict(cleaned)
+        cleaned = {k.removeprefix("_orig_mod."): v for k, v in ckpt["msd"].items()}
+        msd.load_state_dict(cleaned)
+        print("Pretrained weights loaded (optimizers reset for Phase 1)")
 
     # Resume from checkpoint — must happen BEFORE torch.compile to avoid
     # _orig_mod.* key prefix mismatches in state_dict loading.
@@ -464,6 +531,10 @@ def train(args):
             print(f"\nTime limit reached ({args.max_hours}h). Stopping.")
             break
 
+        # Phase 1: update degradation severity curriculum
+        if phase == 1 and hasattr(dataset, "set_epoch"):
+            dataset.set_epoch(epoch)
+
         generator.train()
         mpd.train()
         msd.train()
@@ -525,12 +596,16 @@ def train(args):
                 # Mastering quality losses
                 loss_mastering, mastering_details = mastering_loss_fn(hr_hat, hr_audio)
 
+                # HF band loss (Phase 1 only)
+                loss_hf = hf_band_loss_fn(hr_hat, hr_audio) if hf_band_loss_fn else 0.0
+
                 loss_g = (
                     loss_g_mpd + loss_g_msd
                     + train_cfg["lambda_fm"] * (loss_fm_mpd + loss_fm_msd)
                     + train_cfg["lambda_stft"] * loss_stft
                     + train_cfg["lambda_mel"] * loss_mel
                     + loss_mastering
+                    + lambda_hf_band * loss_hf
                 )
 
             scaler_g.scale(loss_g).backward()
@@ -595,9 +670,9 @@ def train(args):
         sched_g.step()
         sched_d.step()
 
-        # Periodic validation with quality metrics
+        # Periodic validation with quality metrics (uses held-out val set)
         if (epoch + 1) % train_cfg["checkpoint_interval"] == 0:
-            _run_validation(generator, loader, device, writer, epoch, global_step, output_sr)
+            _run_validation(generator, val_loader, device, writer, epoch, global_step, output_sr)
 
         # Save checkpoint
         if (epoch + 1) % train_cfg["checkpoint_interval"] == 0 or epoch == train_cfg["epochs"] - 1:
@@ -656,5 +731,7 @@ if __name__ == "__main__":
                         help="Path to checkpoint to resume from")
     parser.add_argument("--max-hours", type=float, default=None,
                         help="Stop training after this many hours")
+    parser.add_argument("--phase", type=int, default=0, choices=[0, 1],
+                        help="Training phase: 0=super-resolution, 1=degradation restoration")
     args = parser.parse_args()
     train(args)

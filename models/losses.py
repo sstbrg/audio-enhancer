@@ -8,7 +8,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
 
-from .constants import OUTPUT_SAMPLE_RATE
+from .constants import (
+    HF_BAND_FFT_SIZE,
+    HF_BAND_HIGH_FREQ,
+    HF_BAND_HOP_SIZE,
+    HF_BAND_LOW_FREQ,
+    HF_BAND_WIN_SIZE,
+    OUTPUT_SAMPLE_RATE,
+)
 
 
 def generator_loss(disc_outputs: list[torch.Tensor]) -> torch.Tensor:
@@ -138,6 +145,54 @@ class MelSpectrogramLoss(nn.Module):
             y_hat_mel = self.mel_transform(y_hat.float())
 
         return F.l1_loss(torch.log(y_hat_mel + 1e-8), torch.log(y_mel + 1e-8))
+
+
+class HighFrequencyBandLoss(nn.Module):
+    """L1 loss on the 16-24 kHz spectral band for Phase 1 codec artifact restoration.
+
+    Lossy codecs cause the most visible damage in the 16-24 kHz range (cutoffs,
+    SBR artifacts, spectral holes). This loss focuses the generator on restoring
+    that specific band.
+    """
+
+    def __init__(
+        self,
+        sample_rate: int = OUTPUT_SAMPLE_RATE,
+        fft_size: int = HF_BAND_FFT_SIZE,
+        hop_size: int = HF_BAND_HOP_SIZE,
+        win_size: int = HF_BAND_WIN_SIZE,
+        low_freq: float = HF_BAND_LOW_FREQ,
+        high_freq: float = HF_BAND_HIGH_FREQ,
+    ):
+        super().__init__()
+        self.fft_size = fft_size
+        self.hop_size = hop_size
+        self.win_size = win_size
+        self.register_buffer("window", torch.hann_window(win_size))
+
+        # Precompute frequency bin mask for the target band
+        freqs = torch.linspace(0, sample_rate / 2, fft_size // 2 + 1)
+        self.register_buffer("band_mask", (freqs >= low_freq) & (freqs <= high_freq))
+
+    def forward(self, y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        if y.dim() == 3:
+            y = y.squeeze(1)
+            y_hat = y_hat.squeeze(1)
+
+        with torch.autocast("cuda", enabled=False):
+            y = y.float()
+            y_hat = y_hat.float()
+
+            y_stft = torch.stft(y, self.fft_size, self.hop_size, self.win_size,
+                                self.window, return_complex=True)
+            y_hat_stft = torch.stft(y_hat, self.fft_size, self.hop_size, self.win_size,
+                                    self.window, return_complex=True)
+
+            # Extract magnitudes in the HF band only
+            y_hf = torch.abs(y_stft[:, self.band_mask, :])
+            y_hat_hf = torch.abs(y_hat_stft[:, self.band_mask, :])
+
+        return F.l1_loss(y_hat_hf, y_hf)
 
 
 # Backwards-compatible function wrapper (deprecated)
