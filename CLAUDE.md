@@ -134,38 +134,30 @@ Vast.ai API key read from `VAST_API_KEY` env var or `~/.config/vastai/vast_api_k
 
 ## Agent team
 
-This project uses a 12-person agent team defined in `.claude/agents/`.
+This project uses a 5-agent team defined in `.claude/agents/`.
 **Always delegate work to the appropriate agent(s) rather than doing it directly.**
 
 ### Team roster
 | Agent | Name | Domain |
 |-------|------|--------|
-| `system-engineer` | Jason | System oversight, final arbiter on conflicts |
-| `ai-team-lead` | Lara | AI/ML strategy, research, planning |
-| `ai-engineer-training` | Adam | Training pipeline, losses, metrics |
-| `ai-engineer-gans` | Kyle | Generator, discriminator architecture |
-| `data-engineer` | Cain | Datasets, augmentation, data pipelines |
-| `frontend-server` | Rona | Server-side dashboards, monitoring UI |
-| `frontend-analyzer` | Pierce | Analyzer Gradio UI, i18n |
-| `backend-analyzer` | Anton | Audio metrics, music analysis |
-| `devops-engineer` | Marina | Vast.ai, cloud, MLOps |
-| `docs-manager` | Perla | Documentation |
-| `git-expert` | Florence | Code review, git management |
+| `system-engineer` | Jason | System oversight, architecture review, conflict resolution |
+| `ai-team-lead` | Lara | AI/ML (training, models, losses, metrics), UI (Gradio), docs, code review |
+| `data-engineer` | Cain | Datasets, augmentation, degradation pipeline, data pipelines |
+| `devops-engineer` | Marina | Vast.ai, cloud, MLOps, infrastructure |
 | `qa-expert` | Jack | Testing, QA, bug reporting |
 
 ### Orchestration rules
 1. **Route every task** to the agent whose domain matches. If a task spans domains, spawn multiple agents in parallel.
 2. **Jason (system-engineer) has final say** on cross-team conflicts and system-level decisions.
-3. **Lara (ai-team-lead) has final say** on AI/ML conflicts between Adam, Kyle, and Cain.
+3. **Lara (ai-team-lead) has final say** on all AI/ML, metrics, UI, and documentation decisions.
 4. **Jack (qa-expert) can flag bugs to anyone** — all team members are responsible for fixing QA-reported bugs.
-5. **Florence (git-expert) reviews and merges all code** into develop. No other agent merges to develop.
-6. When uncertain which agent to use, ask Jason to triage.
-7. Agents should read CLAUDE.md and relevant code before making decisions.
-8. Agents can talk to each other via the agent tracker MCP (message_log, message_unread).
-9. **Git workflow**: Each agent works on a feature branch (`<agent-slug>/<description>`), pushes it, then asks Florence to review and merge. NEVER commit directly to develop.
-10. **If an agent hits context exhaustion**, it must summarize state in agent_update and message_log, mark tasks as 'blocked', and exit. The launcher respawns a fresh session to continue.
-11. Agents are tracked via the agents manager MCP (under .claude/mcp/)
-12. Agents are autonomous — they read the roadmap and self-assign work, not wait for tasks.
+5. When uncertain which agent to use, ask Jason to triage.
+6. Agents should read CLAUDE.md and relevant code before making decisions.
+7. Agents can talk to each other via the agent tracker MCP (message_log, message_unread).
+8. All agents commit directly to develop.
+9. **If an agent hits context exhaustion**, it must summarize state in agent_update and message_log, mark tasks as 'blocked', and exit. The launcher respawns a fresh session to continue.
+10. Agents are tracked via the agent tracker MCP (under .claude/mcp/).
+11. Agents are autonomous — they read the roadmap and self-assign work, not wait for tasks.
 
 ## Commands
 
