@@ -199,31 +199,40 @@ else
     die "Phase ${PHASE} datasets not available without --from-gdrive"
 fi
 
-# Extract datasets (Phase 0 only — Phase 1 datasets arrive pre-extracted via Drive)
-if [ "$PHASE" = "0" ]; then
-    if [ ! -d "$EXTRACT_DIR/EG-IPT" ] && [ -f "$RAW_DIR/EG-IPT.zip" ]; then
-        log "  Extracting EG-IPT..."
-        unzip -q "$RAW_DIR/EG-IPT.zip" -d "$EXTRACT_DIR/EG-IPT"
-        ok "  EG-IPT extracted"
+# Extract datasets and create training symlinks (Phase 0 and Phase 1 use the same
+# clean audio; Phase 1 also needs codec variant files from Drive).
+for name in EG-IPT musdb18hq; do
+    zip_file="$RAW_DIR/${name}.zip"
+    # EG-IPT dir is nested under zip name; musdb18hq is a flat zip
+    if [ ! -d "$EXTRACT_DIR/$name" ] && [ -f "$zip_file" ]; then
+        log "  Extracting $name..."
+        unzip -q "$zip_file" -d "$EXTRACT_DIR/$name"
+        ok "  $name extracted"
     else
-        [ -d "$EXTRACT_DIR/EG-IPT" ] && ok "  EG-IPT already extracted"
+        [ -d "$EXTRACT_DIR/$name" ] && ok "  $name already extracted"
     fi
+done
 
-    if [ ! -d "$EXTRACT_DIR/musdb18hq" ] && [ -f "$RAW_DIR/musdb18hq.zip" ]; then
-        log "  Extracting MUSDB18-HQ..."
-        unzip -q "$RAW_DIR/musdb18hq.zip" -d "$EXTRACT_DIR/musdb18hq"
-        ok "  MUSDB18-HQ extracted"
+# Symlinks for training data dir (phase0_combined or phase1_combined)
+for name in EG-IPT musdb18hq; do
+    if [ -d "$EXTRACT_DIR/$name" ] && [ ! -L "$DATA_DIR/$name" ]; then
+        ln -sf "$EXTRACT_DIR/$name" "$DATA_DIR/$name"
+        log "  Linked $name into phase${PHASE}_combined"
+    fi
+done
+
+# Phase 1: also pull pre-computed codec variants from Drive
+if [ "$PHASE" != "0" ] && (( OPT_GDRIVE )); then
+    log "  [Phase 1] Pulling pre-computed codec variants from Drive..."
+    if python "$PROJECT_DIR/infra/datasets.py" pull-codec-variants \
+            --to-dir "$DATA_DIR"; then
+        ok "  Codec variants ready"
     else
-        [ -d "$EXTRACT_DIR/musdb18hq" ] && ok "  MUSDB18-HQ already extracted"
+        log "  WARNING: codec variants not available on Drive — DegradedAudioDataset"
+        log "           will fall back to on-the-fly ffmpeg codec degradation (slower)."
+        log "           Run 'python data/precompute_codecs.py --input $DATA_DIR' then"
+        log "           'python infra/datasets.py push-codec-variants' to cache them."
     fi
-
-    # Symlinks for training
-    for name in EG-IPT musdb18hq; do
-        if [ -d "$EXTRACT_DIR/$name" ] && [ ! -L "$DATA_DIR/$name" ]; then
-            ln -sf "$EXTRACT_DIR/$name" "$DATA_DIR/$name"
-            log "  Linked $name into phase${PHASE}_combined"
-        fi
-    done
 fi
 
 ok "Datasets ready"

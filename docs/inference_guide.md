@@ -35,10 +35,11 @@ The pipeline behavior depends on input sample rate:
 | Any (lossy) | Yes | if <48kHz | Yes | Full pipeline |
 | 44.1kHz | Yes | Yes | Yes | Most common CD-quality input |
 | 48kHz | Yes | Skipped | Yes | Already at GAN input SR |
-| 96kHz | Yes | Skipped | Yes | GAN still runs (upscale to 96kHz is 1:1, applies mastering) |
-| >96kHz | Yes | Skipped | Yes | GAN runs at target SR |
+| 96kHz | Yes | Skipped | No | Already at target SR — GAN skipped. Phase 1: mastering-only mode. |
+| >96kHz | Yes | Skipped | No | Above target SR — passes through unchanged. |
 
 AudioSR stage is skipped when `sr >= 48000` (the condition in `_run_audiosr`).
+GAN stage is skipped when `sr >= 96000` — at that point the signal is already at target SR.
 
 Stage details:
 
@@ -170,6 +171,10 @@ If you need to use the generator in your own code:
 import torch
 from models.generator import Generator
 
+# NOTE: weights_only=False is required because the checkpoint embeds a config dict.
+# Only load checkpoints from trusted sources (your own training runs, official releases).
+# Once the checkpoint format is updated to store config separately (JSON sidecar),
+# this can be changed to weights_only=True for improved security.
 ckpt = torch.load("checkpoints/phase0/latest.pt", map_location="cpu", weights_only=False)
 gen_cfg = ckpt["config"]["gan"]["generator"]
 
@@ -214,7 +219,7 @@ Use `--no-audiosr` to skip, or install via `pip install audiosr`.
 The pipeline falls back to Kaiser sinc resampling for the final SR step. Output quality will be lower than with a trained GAN.
 
 **OOM during GAN:**
-The chunked processing is automatic, but for very large files on low-VRAM machines, you can reduce chunk size by editing the `chunk_samples` variable in `enhance.py:_run_gan` (line ~287). Default is `48000 * 10` (10 seconds).
+The chunked processing is automatic, but for very large files on low-VRAM machines, you can reduce chunk size by editing the `chunk_samples` calculation in `enhance.py:_run_gan`. The default is `INPUT_SAMPLE_RATE * GAN_CHUNK_SECONDS` (10 seconds at 48kHz = 480000 samples). Reducing to 5 seconds should halve peak GPU memory for the GAN stage.
 
 **Output sounds distorted / clipped:**
 Check that the input file is not already clipping (`peak > 1.0`). The GAN output is clamped to `[-1, 1]` but pre-existing distortion will pass through.

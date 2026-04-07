@@ -25,6 +25,24 @@ GENERATOR_RESBLOCK_DILATIONS = [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
 MPD_PERIODS = [2, 3, 5, 7, 11, 17, 23]  # Extended for 96kHz
 MSD_SCALES = 3
 
+# Apollo model sample rate
+APOLLO_SAMPLE_RATE = 44100
+
+# Multi-resolution STFT loss configurations: (fft_size, hop_size, win_size)
+# Multiple resolutions capture different time-frequency trade-offs.
+STFT_LOSS_CONFIGS = [
+    (512, 50, 240),
+    (1024, 120, 600),
+    (2048, 240, 1200),
+    (4096, 480, 2400),
+]
+
+# GAN inference chunking
+GAN_CHUNK_SECONDS = 10          # Chunk length for GAN inference (seconds)
+APOLLO_CHUNK_SECONDS = 30       # Chunk length for Apollo inference (seconds)
+GAN_CHUNK_OVERLAP_SAMPLES = 4800   # Overlap between GAN chunks (samples at 48kHz)
+APOLLO_CHUNK_OVERLAP_SAMPLES = 4410  # Overlap between Apollo chunks (samples at 44.1kHz)
+
 # Training defaults
 LEAKY_RELU_SLOPE = 0.1
 GRAD_CLIP_MAX_NORM = 5.0         # Gradient clipping max norm
@@ -32,6 +50,8 @@ LR_SCHEDULER_GAMMA = 0.999       # ExponentialLR decay factor
 LOSS_SPIKE_THRESHOLD = 10.0      # Skip G step if g_loss > this * running mean
 LOSS_EMA_DECAY = 0.99            # Exponential moving average decay for loss tracking
 AMP_SCALER_GROWTH_INTERVAL = 4000  # Steps between AMP scaler growth attempts
+LR_WARMUP_EPOCHS = 0                # Epochs of linear LR warmup (0 = disabled)
+LR_WARMUP_START_FACTOR = 0.01       # Initial LR fraction during warmup (1% of base LR)
 
 # ── Upscale potential analysis ───────────────────────────────────────────────
 # FFT parameters
@@ -74,47 +94,165 @@ UPSCALE_SCORE_HIGH = 70     # score >= HIGH  → "high potential"
 UPSCALE_SCORE_MEDIUM = 40   # score >= MEDIUM → "medium potential"
 UPSCALE_SCORE_LOW = 10      # score >= LOW   → "low potential" (else "already optimal")
 
-# ── Phase 1: Degradation constants ──────────────────────────────────────────
+# ── Audio metrics (metrics/evaluate.py) ─────────────────────────────────────
+# Sample rates used by external metric models
+PAM_SAMPLE_RATE = 44100          # PAM (CLAP-based) expects 44.1kHz
+PAM_CHUNK_SECONDS = 7            # PAM processes 7-second chunks
+AUDIOBOX_SAMPLE_RATE = 16000     # Audiobox Aesthetics expects 16kHz
+MUQ_SAMPLE_RATE = 24000          # MuQ-Eval expects 24kHz
+MUQ_MAX_SECONDS = 10             # MuQ-Eval max input length (seconds)
+VISQOL_SAMPLE_RATE = 48000       # ViSQOL operates at 48kHz
 
-# Codec types and bitrate ranges (kbps)
+# Reference-based metric defaults
+METRIC_REFERENCE_SAMPLE_RATE = 48000  # Default SR for SI-SNR, SDR comparison
+METRIC_EPSILON = 1e-8                 # Numerical stability epsilon for metric computations
+
+# Content preservation (chroma, MFCC, onset)
+CONTENT_ANALYSIS_SAMPLE_RATE = 22050  # librosa default SR for content analysis
+CHROMA_N_FFT = 4096                   # FFT size for chroma feature extraction
+CHROMA_HOP_LENGTH = 512              # Hop length for chroma features
+MFCC_N_COEFFICIENTS = 20             # Number of MFCC coefficients to extract
+ONSET_TOLERANCE_MS = 50.0            # Onset matching tolerance (milliseconds)
+
+# HF energy ratio metric (SR-specific validation)
+HF_ENERGY_CROSSOVER_DIVISOR = 4      # Crossover freq = output_sr / divisor (e.g., 96k/4 = 24kHz)
+HF_ENERGY_FFT_SIZE = 8192            # FFT size for HF analysis (higher = more freq resolution)
+HF_ENERGY_HOP_SIZE = 2048            # Hop size for HF energy STFT
+
+# ── Music analysis (metrics/music_analysis.py) ──────────────────────────────
+# Essentia analysis sample rates
+ESSENTIA_DEFAULT_SAMPLE_RATE = 16000  # Essentia default for general analysis
+ESSENTIA_KEY_BPM_SAMPLE_RATE = 44100  # Essentia needs 44.1kHz for key/BPM accuracy
+
+# CLAP classification
+CLAP_SAMPLE_RATE = 48000              # LAION-CLAP expects 48kHz
+CLAP_TEMPERATURE = 10.0               # Softmax temperature for sharpening CLAP logits
+
+# MERT instrument recognition
+MERT_MAX_SECONDS = 10                 # MERT max input length (seconds)
+INSTRUMENT_MIN_PROBABILITY = 0.05     # Min probability to report instrument as detected
+
+# Genre labels for CLAP zero-shot classification
+CLAP_GENRE_LABELS = [
+    "rock", "pop", "jazz", "classical", "electronic", "hip hop",
+    "R&B", "metal", "folk", "country", "blues", "reggae",
+    "ambient", "punk", "soul", "funk", "latin",
+]
+
+# Mood labels for CLAP zero-shot classification
+CLAP_MOOD_LABELS = [
+    "happy", "sad", "energetic", "calm", "aggressive",
+    "melancholic", "uplifting", "dark", "romantic", "peaceful",
+]
+
+# Instrument labels for CLAP zero-shot instrument detection
+CLAP_INSTRUMENT_LABELS = [
+    "guitar", "piano", "drums", "bass", "violin", "vocals",
+    "synthesizer", "trumpet", "saxophone", "flute", "cello",
+    "organ", "harmonica", "accordion",
+]
+
+# Prompt templates for CLAP zero-shot classification
+CLAP_GENRE_PROMPT_TEMPLATE = "this is {} music"
+CLAP_MOOD_PROMPT_TEMPLATE = "music that sounds {}"
+CLAP_INSTRUMENT_PROMPT_TEMPLATE = "a recording featuring {}"
+
+# ── analyze.py display thresholds ────────────────────────────────────────────
+# Quality indicator thresholds for the CLI analyzer
+ANALYZE_CREST_FACTOR_GOOD_DB = 10.0   # Crest factor above this = good dynamics
+ANALYZE_DYNAMIC_RANGE_GOOD_DB = 8.0   # Dynamic range above this = good dynamics
+ANALYZE_FRAME_SIZE_SECONDS = 0.4      # Frame size for dynamic range analysis
+ANALYZE_SILENCE_THRESHOLD = 1e-6      # RMS below this = silence (skip frame)
+ANALYZE_CORRELATION_GOOD_LOW = 0.3    # L/R correlation lower bound for "good"
+ANALYZE_CORRELATION_GOOD_HIGH = 0.95  # L/R correlation upper bound for "good"
+
+# ── Phase 1: Degradation pipeline ────────────────────────────────────────────
+
+# Codec degradation — supported types and bitrate menus
 CODEC_TYPES = ["mp3", "aac", "ogg", "opus", "wma"]
-CODEC_BITRATE_RANGES = {
-    "mp3": [64, 96, 128, 160, 192, 256, 320],
-    "aac": [64, 96, 128, 160, 192, 256],
-    "ogg": [64, 96, 128, 160, 192, 256, 320],
+CODEC_BITRATE_RANGES: dict[str, list[int]] = {
+    "mp3":  [64, 96, 128, 160, 192, 256, 320],
+    "aac":  [64, 96, 128, 160, 192, 256],
+    "ogg":  [64, 96, 128, 160, 192, 256, 320],
     "opus": [32, 48, 64, 96, 128],
-    "wma": [96, 128, 192],
+    "wma":  [96, 128, 192],
 }
-CODEC_DOUBLE_ENCODE_PROB = 0.05  # Probability of double-encoding
+# Probability weight for each codec type (must match CODEC_TYPES order)
+CODEC_WEIGHTS = [0.40, 0.25, 0.15, 0.12, 0.08]  # mp3, aac, ogg, opus, wma
+CODEC_DOUBLE_ENCODE_PROB = 0.05  # Probability of double-encoding (transcoding chain)
 
-# EQ degradation ranges
-EQ_FREQ_RANGE = (60.0, 16000.0)   # Hz, log-distributed
-EQ_GAIN_RANGE = (-12.0, 12.0)     # dB
-EQ_Q_RANGE = (0.3, 8.0)
-EQ_BANDS_RANGE = (2, 5)           # Number of parametric EQ bands
-EQ_RESONANT_Q_RANGE = (6.0, 12.0)
-EQ_RESONANT_GAIN_RANGE = (6.0, 15.0)  # dB
+# Bad-EQ degradation parameters
+EQ_BANDS_RANGE = (2, 5)                       # Number of biquad EQ bands
+EQ_FREQ_RANGE = (60.0, 16000.0)               # Center/shelf frequency range (Hz)
+EQ_GAIN_RANGE = (-12.0, 12.0)                 # Per-band gain range (dB)
+EQ_Q_RANGE = (0.3, 8.0)                       # Biquad Q (bandwidth) range
+EQ_RESONANT_Q_RANGE = (6.0, 12.0)             # Narrow Q for resonant peaks
+EQ_RESONANT_GAIN_RANGE = (6.0, 15.0)          # Resonant peak gain (dB)
+EQ_LOWPASS_RANGE = (12000.0, 20000.0)         # Bandwidth-limiting lowpass cutoff (Hz)
+EQ_HIGHPASS_RANGE = (40.0, 200.0)             # Highpass cutoff range (Hz)
 
-# Dynamic compression
-COMP_THRESHOLD_RANGE = (-20.0, -6.0)   # dBFS
-COMP_RATIO_RANGE = (4.0, 20.0)
-COMP_ATTACK_RANGE = (0.1, 5.0)         # ms
-COMP_RELEASE_RANGE = (50.0, 500.0)     # ms
+# Dynamic compression degradation parameters
+COMP_THRESHOLD_RANGE = (-20.0, -6.0)          # Compressor threshold (dBFS)
+COMP_RATIO_RANGE = (4.0, 20.0)                # Compression ratio
+COMP_ATTACK_RANGE = (0.1, 100.0)              # Attack time (ms)
+COMP_RELEASE_RANGE = (10.0, 500.0)            # Release time (ms)
+COMP_LIMITER_THRESHOLD_RANGE = (-6.0, -1.0)   # Brick-wall limiter threshold (dBFS)
 
-# Clipping
-CLIP_HARD_THRESHOLD_RANGE = (0.3, 0.95)
-CLIP_SOFT_GAIN_RANGE = (1.5, 5.0)
+# Stereo damage parameters
+STEREO_WIDTH_RANGE = (0.0, 0.6)               # Width factor (0=mono, 0.6=narrow stereo)
+STEREO_DELAY_RANGE = (0.0, 2.0)               # Per-channel delay (ms) for comb filtering
+STEREO_MS_GAIN_RANGE = (-12.0, 12.0)          # Mid/side gain imbalance (dB)
+STEREO_CROSSTALK_RANGE = (0.05, 0.30)         # Channel crosstalk fraction
 
-# Sample rate / bit depth degradation
-DEGRADED_SAMPLE_RATES = [22050, 32000, 44100]
-DEGRADED_BIT_DEPTHS = [8, 16]
+# Clipping degradation parameters
+CLIP_HARD_THRESHOLD_RANGE = (0.3, 0.95)       # Hard clip threshold (fraction of full scale)
+CLIP_SOFT_GAIN_RANGE = (1.5, 5.0)             # Soft clip (tanh) gain factor
+CLIP_INTERSAMPLE_UPSAMPLE = 4                 # Upsample factor for intersample clipping
 
-# Noise floor levels (dBFS)
-NOISE_LEVEL_RANGE = (-40.0, -20.0)
-HUM_FREQ_OPTIONS = [50.0, 60.0]  # Mains frequencies (EU/US)
-HUM_HARMONICS = 5                 # Number of harmonics to include
+# Sample-rate / bit-depth degradation parameters
+DEGRADED_SAMPLE_RATES = [22050, 32000, 44100]  # Intermediate reduced sample rates
+DEGRADED_BIT_DEPTHS = [8, 12, 16]              # Reduced bit depths to simulate
+DEGRADED_DITHER_AMPLITUDE = 0.5                # TPDF dither amplitude in LSBs
 
-# Stereo damage
-STEREO_WIDTH_RANGE = (0.0, 0.6)       # Width factor for narrowing
-STEREO_DELAY_RANGE = (0.0, 2.0)       # ms, per-channel delay
-STEREO_CROSSTALK_RANGE = (0.05, 0.3)  # Fraction of channel mixed
+# Noise degradation parameters
+NOISE_LEVEL_RANGE = (-40.0, -20.0)             # White noise amplitude range (dBFS)
+NOISE_PINK_RANGE = (-40.0, -25.0)              # Pink noise amplitude range (dBFS)
+HUM_FREQ_OPTIONS = [50.0, 60.0]                # Mains hum fundamentals (EU=50, US=60)
+HUM_HARMONICS = 5                              # Number of harmonics to generate
+HUM_LEVEL_RANGE = (-40.0, -25.0)               # Hum amplitude range (dBFS)
+NOISE_IMPULSE_RATE_RANGE = (1.0, 20.0)         # Impulse/click rate (per second)
+NOISE_IMPULSE_LEVEL_RANGE = (-30.0, -10.0)     # Impulse amplitude range (dBFS)
+
+# DegradationChain stage probability gates
+CHAIN_P_SOURCE = 0.40       # Probability of applying source degradation (SR/BD/noise)
+CHAIN_P_PROCESSING = 0.70   # Probability of applying processing (EQ/compression/clip)
+CHAIN_P_CODEC = 0.60        # Probability of applying codec encoding
+CHAIN_P_SPATIAL = 0.30      # Probability of applying stereo damage (stereo-only)
+CHAIN_MAX_LENGTH = 3         # Maximum number of degradations per sample
+
+# Severity curriculum schedule
+CURRICULUM_WARMUP_EPOCHS = 20   # Epochs of mild severity only
+CURRICULUM_RAMP_EPOCHS = 80     # Epochs for linear ramp to full severity
+CURRICULUM_MILD_MAX = 0.3       # Max severity during warmup
+CURRICULUM_FULL_MIN = 0.7       # Min severity after full ramp
+
+# Phase 1 dataset — Phase 0 SR pair mixing ratio (catastrophic forgetting prevention)
+PHASE0_MIX_RATIO = 0.20  # Fraction of each batch from clean Phase 0 SR pairs
+
+# Pre-computed codec variants — common bitrates to pre-compute on disk
+PRECOMPUTE_BITRATES: dict[str, list[int]] = {
+    "mp3": [128, 192, 320],
+    "aac": [128, 256],
+    "ogg": [128],
+}
+
+# High-frequency band loss (16-24 kHz) — targets codec artifact restoration
+HF_BAND_FFT_SIZE = 4096              # ~23.4 Hz/bin at 96kHz — good resolution
+HF_BAND_HOP_SIZE = 1024              # 75% overlap for smooth energy estimates
+HF_BAND_WIN_SIZE = 4096              # Match FFT size for rectangular-free analysis
+HF_BAND_LOW_FREQ = 16000             # Lower bound of HF band (Hz)
+HF_BAND_HIGH_FREQ = 24000            # Upper bound of HF band (Hz) — input Nyquist
+LAMBDA_HF_BAND_DEFAULT = 10.0        # Default weight for Phase 1 training
+
+# Phase 1 recommended segment length (longer than Phase 0's 16384 for dynamics restoration)
+DEGRADATION_SEGMENT_LENGTH = 32768  # ~0.68s at 48kHz input, ~1.37s at 96kHz

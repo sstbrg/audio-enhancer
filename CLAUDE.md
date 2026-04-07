@@ -24,6 +24,7 @@ data/
   degradation_chain.py # (Phase 1) Chain builder + curriculum scheduler
   precompute_codecs.py # (Phase 1) Pre-compute MP3/AAC/OGG codec variants
   dataset_phase1.py   # (Phase 1) DegradedAudioDataset: (degraded_48k, clean_96k) pairs
+  create_validation_set.py # (Phase 1) Fixed validation set generator with per-degradation metadata
 metrics/
   evaluate.py           # SI-SNR, SDR, CDPAM, ViSQOL, Audiobox, PAM, MuQ-Eval, chroma/MFCC/onset
   music_analysis.py     # Genre, mood, instruments, key, BPM (Essentia, CLAP, MERT)
@@ -45,15 +46,13 @@ third_party/          # (gitignored) PAM, MuQ-Eval clones
 tests/
   test_compile_amp.py   # torch.compile + AMP compatibility tests (Kyle)
   test_mastering_losses.py # mastering_losses.py unit tests (Jack)
-  test_checkpoint.py    # Checkpoint save/load round-trip + _unwrap_state_dict tests (Jack)
 docs/
   ARCHITECTURE.md     # Detailed architecture: generator, discriminators, losses, data flow
   training_guide.md   # Step-by-step: Vast.ai setup, datasets, training, monitoring
   inference_guide.md  # enhance.py usage: formats, sample rate logic, batch processing
   infrastructure_guide.md # Vast.ai, rclone, GCP, monitoring setup
-  phase0_training_analysis.md # Epoch 0 results, loss decomposition, optimization plan
-  phase1_degradation_plan.md  # Phase 1 degradation pipeline design and file layout
-  phase1_finetuning_recipe.md # Phase 1 fine-tuning spec: LR, loss weights, mixed batches (Lara)
+  phase0_training_analysis.md # Epoch 0 results, loss decomposition, optimization plan (Lara)
+  phase1_degradation_plan.md  # Phase 1 degradation pipeline plan and implementation roadmap
   code_review_report.md # Florence/Florence-2 code review findings and fix status
   ai_strategy_review.md # AI/ML strategy analysis and recommendations
   model_architecture_review.md # Generator/discriminator architecture deep-dive
@@ -85,12 +84,14 @@ Resume: `--resume checkpoints/phase0/latest.pt`
 - Phase 0 epoch 0 complete, checkpoint saved to Google Drive
 - Checkpoint: `gdrive:audio-enhancer-datasets/checkpoints/checkpoint_0000.pt`
 - Losses at end of epoch 0: d≈4.2, g≈35 (stable, encodec spikes resolved). Analysis: `docs/phase0_training_analysis.md`
-- Training optimizations (AMP, torch.compile) committed but not yet tested in production training
+- Training optimizations (AMP, torch.compile) committed but not yet tested in training
 - `_unwrap_state_dict` helper wired into all checkpoint save paths in `train.py` — strips `_orig_mod.` prefix from compiled model state dicts (done)
 - Vast.ai auto-shutdown after 15min idle (cron checks for train.py process)
-- **Tests:** 176/176 pass (Jack). New tests: `tests/test_mastering_losses.py` (Jack), `tests/test_checkpoint.py` (Jack). More coverage tests pending.
-- **Code review (Florence-2):** 5 critical issues found — weights_only=False in torch.load, temp file leak in validation, hardcoded nyquist assumption, magic sample rates in enhance.py, magic STFT params in losses.py. Do NOT merge to main until fixed. See `docs/code_review_report.md`.
-- **Phase 1 implementation in progress:** degradations.py, degradation_chain.py, dataset_phase1.py, precompute_codecs.py, configs/phase1.yaml all added. train.py --phase flag added. Fine-tuning recipe: `docs/phase1_finetuning_recipe.md`.
+- **Code review criticals FIXED (Adam):** All 5 critical issues from Florence-2 review are fixed. Florence reviewing for merge. Do NOT merge to main until Florence approves. See `docs/code_review_report.md` for details.
+- **Tests:** 176/176 pass (Jack). New tests added: `tests/test_compile_amp.py` (Kyle), `tests/test_mastering_losses.py` (Jack in progress). More coverage tests pending (Jack tasks 16-18).
+- **Phase 1 architecture confirmed (Lara):** Same 48kHz→96kHz generator; degrade at 96kHz, downsample to 48kHz for model input. See `docs/phase1_degradation_plan.md`.
+- **Phase 1 implementation in progress:** Cain (degradations.py, chain, dataset, config), Adam (constants, HighFreqBandLoss, train.py --phase flag), Kyle (compile/AMP tests), Anton (metrics magic numbers cleanup)
+- **Dashboard 5th tab:** Rona adding Agent Team Status tab to `infra/dashboard.py`
 
 ## Datasets
 
@@ -157,13 +158,14 @@ This project uses a 12-person agent team defined in `.claude/agents/`.
 2. **Jason (system-engineer) has final say** on cross-team conflicts and system-level decisions.
 3. **Lara (ai-team-lead) has final say** on AI/ML conflicts between Adam, Kyle, and Cain.
 4. **Jack (qa-expert) can flag bugs to anyone** — all team members are responsible for fixing QA-reported bugs.
-5. **Florence (git-expert) reviews all code** before merges to main.
+5. **Florence (git-expert) reviews and merges all code** into develop. No other agent merges to develop.
 6. When uncertain which agent to use, ask Jason to triage.
 7. Agents should read CLAUDE.md and relevant code before making decisions.
-8. Agents can talk to each other.
-9. All agents can commit and push to git develop branch.
-10. **If an agent hits its maxTurns limit and stops responding**, the team lead must immediately spawn a fresh agent of the same type (with a `-2` suffix, e.g., `rona-2`) to continue the unfinished work. Pass full context of what was done and what remains in the new agent's prompt.
+8. Agents can talk to each other via the agent tracker MCP (message_log, message_unread).
+9. **Git workflow**: Each agent works on a feature branch (`<agent-slug>/<description>`), pushes it, then asks Florence to review and merge. NEVER commit directly to develop.
+10. **If an agent hits context exhaustion**, it must summarize state in agent_update and message_log, mark tasks as 'blocked', and exit. The launcher respawns a fresh session to continue.
 11. Agents are tracked via the agents manager MCP (under .claude/mcp/)
+12. Agents are autonomous — they read the roadmap and self-assign work, not wait for tasks.
 
 ## Commands
 
@@ -200,16 +202,15 @@ This project uses a 12-person agent team defined in `.claude/agents/`.
 - **Datasets:** All available (EG-IPT, MUSDB18-HQ, VCTK, MusicNet, GTSinger, MoisesDB, MAESTRO)
 - **What it learns:** Reconstruct missing high-frequency harmonics above 24kHz that were lost in downsampling
 
-### Phase 1: Degradation Restoration (implementation in progress)
+### Phase 1: Degradation Restoration (implementation underway)
 - **Goal:** Restore quality of poorly mastered / lossy-compressed audio
-- **Input:** Good audio degraded at 96kHz (codec, EQ, compression, stereo damage), then downsampled to 48kHz for model input
+- **Input:** Good audio degraded at 96kHz, then downsampled to 48kHz (same generator input format as Phase 0)
 - **Target:** Original clean 96kHz audio
-- **Architecture:** Same 48kHz→96kHz HiFi-GAN generator — no new model needed. Model learns restoration AND upsampling simultaneously.
-- **Fine-tuning:** From Phase 0 checkpoint (reset optimizer, lower LR: 0.0001, 5-epoch warmup)
+- **Architecture:** Same 48kHz→96kHz HiFi-GAN generator — NO new model variant needed
+- **Fine-tuning:** From Phase 0 checkpoint (reset optimizer, lower LR: 0.0001)
 - **Mixed batches:** 20% Phase 0 SR pairs per batch (catastrophic forgetting prevention)
-- **Losses:** Same stack + `lambda_dynamics=15.0` (3× Phase 0) + `HighFrequencyBandLoss` (16–24 kHz, weight 10.0)
-- **Config:** `configs/phase1.yaml`. Fine-tuning recipe: `docs/phase1_finetuning_recipe.md`
-- **What it learns:** Undo codec artifacts (MP3/AAC), fix bad EQ, restore dynamics, recover stereo width — AND upscale to 96kHz
+- **Losses:** Same stack + `lambda_dynamics=15.0` (3× Phase 0) + new `HighFrequencyBandLoss` (16–24 kHz)
+- **What it learns:** Undo codec artifacts (MP3/AAC), fix bad EQ, restore dynamics, recover stereo width — AND upscale to 96kHz simultaneously
 
 ### Inference behavior (enhance.py)
 - **44.1kHz input** → resample to 48kHz → GAN → 96kHz/24-bit output
@@ -224,12 +225,12 @@ This project uses a 12-person agent team defined in `.claude/agents/`.
 
 ## Next steps
 
-1. **[BLOCKING] Fix code review criticals (Adam)** — 5 critical issues from Florence-2 review must be fixed before merging to main. See `docs/code_review_report.md`.
-2. Test AMP + torch.compile training on Vast.ai (committed, not yet run in production)
+1. **[BLOCKING] Florence review of Adam's bug fixes** — Adam fixed all 5 critical issues, awaiting Florence merge approval before main. See `docs/code_review_report.md`.
+2. Test AMP + torch.compile training on Vast.ai (committed, not yet run in production training)
 3. Evaluate epoch 0 checkpoint quality with analyzer GUI
-4. Continue Phase 0 training (more epochs; see `docs/phase0_training_analysis.md`)
+4. Continue training (more epochs; see `docs/phase0_training_analysis.md` for recommended config: segment_length=32768 + AMP)
 5. MAESTRO dataset: re-download on Vast.ai (101/120GB incomplete, auto-retry script in place)
 6. MoisesDB: user requested access at developer.moises.ai — download when link arrives
 7. MedleyDB: user requested access at medleydb.weebly.com — download when link arrives
-8. **Phase 1 implementation** (Cain + Adam + Kyle + Jack, in progress) — degradations, chain, dataset, config done; train.py --phase flag done. Next: run first Phase 1 training session.
-9. Vast.ai instance may still be running — check and destroy if done
+8. **Phase 1 implementation** (Cain + Adam + Kyle + Jack, in progress) — degradations.py, chain, dataset, config, losses. See `docs/phase1_degradation_plan.md`.
+9. Vast.ai instance may still be running (auto-shutdown was disabled for MAESTRO download) — check and destroy if done
