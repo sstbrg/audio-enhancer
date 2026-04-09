@@ -45,12 +45,10 @@ TMUX_SESSION = "agents"
 
 # Agent groups for compound tasks
 AGENT_GROUPS: dict[str, list[str]] = {
-    "ai-team": ["ai-team-lead", "ai-engineer-training", "ai-engineer-gans"],
-    "frontend": ["frontend-analyzer", "frontend-server"],
-    "infra": ["devops-engineer", "data-engineer"],
-    "review": ["git-expert", "qa-expert", "docs-manager"],
-    "core": ["system-engineer", "ai-team-lead", "ai-engineer-training",
-             "ai-engineer-gans", "data-engineer"],
+    "ai-team": ["ai-team-lead", "data-engineer"],
+    "infra": ["devops-engineer", "qa-expert"],
+    "core": ["system-engineer", "ai-team-lead", "data-engineer"],
+    "all": ["system-engineer", "ai-team-lead", "data-engineer", "devops-engineer", "qa-expert"],
 }
 
 

@@ -87,11 +87,18 @@ Resume: `--resume checkpoints/phase0/latest.pt`
 - Training optimizations (AMP, torch.compile) committed but not yet tested in training
 - `_unwrap_state_dict` helper wired into all checkpoint save paths in `train.py` — strips `_orig_mod.` prefix from compiled model state dicts (done)
 - Vast.ai auto-shutdown after 15min idle (cron checks for train.py process)
-- **Code review criticals FIXED (Adam):** All 5 critical issues from Florence-2 review are fixed. Florence reviewing for merge. Do NOT merge to main until Florence approves. See `docs/code_review_report.md` for details.
-- **Tests:** 176/176 pass (Jack). New tests added: `tests/test_compile_amp.py` (Kyle), `tests/test_mastering_losses.py` (Jack in progress). More coverage tests pending (Jack tasks 16-18).
-- **Phase 1 architecture confirmed (Lara):** Same 48kHz→96kHz generator; degrade at 96kHz, downsample to 48kHz for model input. See `docs/phase1_degradation_plan.md`.
-- **Phase 1 implementation in progress:** Cain (degradations.py, chain, dataset, config), Adam (constants, HighFreqBandLoss, train.py --phase flag), Kyle (compile/AMP tests), Anton (metrics magic numbers cleanup)
-- **Dashboard 5th tab:** Rona adding Agent Team Status tab to `infra/dashboard.py`
+- **Critical bugs FIXED:** weights_only=True on torch.load, temp file leak, hardcoded nyquist, magic numbers, STFT ratios, scaler.update, epoch unbound variable
+- **Validation split:** 95% train / 5% val with dedicated val_loader (no longer uses training data for validation)
+- **Tests:** test_phase1.py (HF loss, degradations, chain, curriculum), test_compile_amp.py, test_losses.py, test_generator.py, test_discriminator.py, test_dataset.py, test_enhance.py, test_upscale_potential.py
+- **Phase 1 implementation COMPLETE:**
+  - data/degradations.py — 7 degradation classes (codec, EQ, compression, clipping, SR, noise, stereo)
+  - data/degradation_chain.py — chain builder with curriculum scheduler
+  - data/dataset_phase1.py — DegradedAudioDataset with Phase 0 mix ratio
+  - data/precompute_codecs.py — pre-compute MP3/AAC/OGG variants for training speed
+  - data/create_validation_set.py — fixed validation set with per-degradation metadata
+  - models/losses.py — HighFrequencyBandLoss (16-24kHz band for codec artifact restoration)
+  - configs/phase1.yaml — full training config with degradation probabilities and curriculum
+  - train.py — --phase 1 flag, pretrained checkpoint loading, HF loss, curriculum updates
 
 ## Datasets
 
@@ -217,12 +224,12 @@ This project uses a 5-agent team defined in `.claude/agents/`.
 
 ## Next steps
 
-1. **[BLOCKING] Florence review of Adam's bug fixes** — Adam fixed all 5 critical issues, awaiting Florence merge approval before main. See `docs/code_review_report.md`.
-2. Test AMP + torch.compile training on Vast.ai (committed, not yet run in production training)
+1. Test AMP + torch.compile training on Vast.ai (committed, not yet run in production training)
+2. Continue Phase 0 training (more epochs; see `docs/phase0_training_analysis.md` for recommended config: segment_length=32768 + AMP)
 3. Evaluate epoch 0 checkpoint quality with analyzer GUI
-4. Continue training (more epochs; see `docs/phase0_training_analysis.md` for recommended config: segment_length=32768 + AMP)
-5. MAESTRO dataset: re-download on Vast.ai (101/120GB incomplete, auto-retry script in place)
-6. MoisesDB: user requested access at developer.moises.ai — download when link arrives
-7. MedleyDB: user requested access at medleydb.weebly.com — download when link arrives
-8. **Phase 1 implementation** (Cain + Adam + Kyle + Jack, in progress) — degradations.py, chain, dataset, config, losses. See `docs/phase1_degradation_plan.md`.
-9. Vast.ai instance may still be running (auto-shutdown was disabled for MAESTRO download) — check and destroy if done
+4. Pre-compute codec variants: `python data/precompute_codecs.py --data_dir datasets/phase0_combined`
+5. Create Phase 1 validation set: `python data/create_validation_set.py --data_dir datasets/phase0_combined`
+6. Start Phase 1 training: `python train.py --data_dir datasets/phase0_combined --config configs/phase1.yaml --phase 1 --resume checkpoints/phase0/latest.pt`
+7. MAESTRO dataset: re-download on Vast.ai (101/120GB incomplete, auto-retry script in place)
+8. MoisesDB: user requested access at developer.moises.ai — download when link arrives
+9. MedleyDB: user requested access at medleydb.weebly.com — download when link arrives
