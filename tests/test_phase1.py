@@ -153,15 +153,16 @@ class TestDegradationChain:
 
     def test_curriculum_severity(self):
         from data.degradation_chain import DegradationChain
+        from models.constants import CURRICULUM_MILD_MAX
         chain = DegradationChain({
             "curriculum": {"enabled": True, "warmup_epochs": 10, "linear_ramp_epochs": 40},
             "max_chain_length": 3,
         })
         chain.update_epoch(0)
-        assert chain.current_severity == pytest.approx(0.1)
+        assert chain.current_severity == pytest.approx(CURRICULUM_MILD_MAX)
 
         chain.update_epoch(10)  # Start of ramp
-        assert chain.current_severity == pytest.approx(0.1)
+        assert chain.current_severity == pytest.approx(CURRICULUM_MILD_MAX)
 
         chain.update_epoch(50)  # End of ramp
         assert chain.current_severity == pytest.approx(1.0)

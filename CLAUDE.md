@@ -40,12 +40,15 @@ infra/
   datasets.py         # Dataset manager: download/upload/pull/status dashboard
   datasets.sh         # Shell version (deprecated, use .py)
   setup-vastai.sh     # One-command Vast.ai instance setup
+  launch_agents.py    # Multi-session agent launcher (tmux/VS Code)
   deploy.sh           # GCP deployment helper (kept for future use)
   main.tf             # Terraform config (GCP, kept for future use)
+utils/
+  audio.py             # Audio I/O: load, save, resample, get_audio_info
 third_party/          # (gitignored) PAM, MuQ-Eval clones
 tests/
   test_compile_amp.py   # torch.compile + AMP compatibility tests (Kyle)
-  test_mastering_losses.py # mastering_losses.py unit tests (Jack)
+  test_phase1.py         # Phase 1: HF loss, degradations, chain, curriculum tests
 docs/
   ARCHITECTURE.md     # Detailed architecture: generator, discriminators, losses, data flow
   training_guide.md   # Step-by-step: Vast.ai setup, datasets, training, monitoring

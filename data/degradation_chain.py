@@ -17,6 +17,11 @@ from data.degradations import (
     SampleRateDegradation,
     StereoDamageDegradation,
 )
+from models.constants import (
+    CURRICULUM_MILD_MAX,
+    CURRICULUM_RAMP_EPOCHS,
+    CURRICULUM_WARMUP_EPOCHS,
+)
 
 
 # Degradation stages in signal-chain order
@@ -61,14 +66,14 @@ class DegradationChain:
             self.current_severity = 1.0
             return
 
-        warmup = curriculum.get("warmup_epochs", 20)
-        ramp = curriculum.get("linear_ramp_epochs", 80)
+        warmup = curriculum.get("warmup_epochs", CURRICULUM_WARMUP_EPOCHS)
+        ramp = curriculum.get("linear_ramp_epochs", CURRICULUM_RAMP_EPOCHS)
 
         if epoch < warmup:
-            self.current_severity = 0.1  # Mild during warmup
+            self.current_severity = CURRICULUM_MILD_MAX
         elif epoch < warmup + ramp:
             progress = (epoch - warmup) / ramp
-            self.current_severity = 0.1 + 0.9 * progress
+            self.current_severity = CURRICULUM_MILD_MAX + (1.0 - CURRICULUM_MILD_MAX) * progress
         else:
             self.current_severity = 1.0  # Full random severity
 
