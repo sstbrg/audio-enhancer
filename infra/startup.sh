@@ -23,8 +23,11 @@ done
 apt-get update
 apt-get install -y --no-install-recommends libsndfile1 ffmpeg tmux htop git
 
-# Create project directory
-PROJECT_DIR="/home/stas/audio-enhancer"
+# Detect the SSH user from instance metadata (falls back to first non-root user)
+SSH_USER=$(curl -sf "http://metadata.google.internal/computeMetadata/v1/instance/attributes/ssh-keys" \
+  -H "Metadata-Flavor: Google" 2>/dev/null | head -1 | cut -d: -f1)
+SSH_USER="${SSH_USER:-stas}"
+PROJECT_DIR="/home/${SSH_USER}/audio-enhancer"
 
 # Clone from GitHub
 echo "Cloning repo..."
@@ -48,7 +51,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 # Fix ownership
-chown -R stas:stas "$PROJECT_DIR"
+chown -R "${SSH_USER}:${SSH_USER}" "$PROJECT_DIR"
 
 # Auto-shutdown cron: power off if idle (no python training process) for 15 min
 cat > /usr/local/bin/auto-shutdown.sh <<'SHUTDOWN'

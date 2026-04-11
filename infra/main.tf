@@ -60,7 +60,7 @@ resource "google_project_iam_member" "vm_storage" {
 
 resource "google_compute_instance" "training" {
   name         = "audio-enhancer-training"
-  machine_type = var.machine_type
+  machine_type = var.machine_type # g2-standard-8 includes 1x L4 GPU
   zone         = var.zone
   tags         = ["audio-enhancer"]
 
@@ -72,15 +72,12 @@ resource "google_compute_instance" "training" {
     }
   }
 
-  guest_accelerator {
-    type  = var.gpu_type
-    count = var.gpu_count
-  }
+  # No guest_accelerator block needed — G2 machine types include L4 GPUs
 
   scheduling {
     on_host_maintenance = "TERMINATE" # Required for GPU instances
     automatic_restart   = false
-    preemptible         = true        # Spot pricing (~70% cheaper)
+    provisioning_model  = "SPOT"      # Spot pricing (~70% cheaper)
   }
 
   network_interface {

@@ -71,11 +71,14 @@ case "${1:-help}" in
       sed -i '/Host audio-enhancer-gcp/,/^$/d' "$SSH_CONFIG"
     fi
 
+    SSH_USER=$(grep 'ssh_user' terraform.tfvars | sed 's/.*=\s*"\(.*\)"/\1/')
+    SSH_USER="${SSH_USER:-stas}"
+
     cat >> "$SSH_CONFIG" <<EOF
 
 Host audio-enhancer-gcp
   HostName $IP
-  User stas
+  User $SSH_USER
   IdentityFile ~/.ssh/id_ed25519
   StrictHostKeyChecking no
   UserKnownHostsFile /dev/null
@@ -90,7 +93,8 @@ EOF
     echo "VM IP: $IP"
     echo "Bucket: gs://$BUCKET"
     echo ""
-    echo "SSH: ssh stas@$IP"
+    SSH_USER=$(grep 'ssh_user' terraform.tfvars | sed 's/.*=\s*"\(.*\)"/\1/')
+    echo "SSH: ssh ${SSH_USER:-stas}@$IP"
     echo "VSCode: Remote SSH -> audio-enhancer-gcp"
     ;;
 

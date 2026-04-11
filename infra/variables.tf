@@ -16,21 +16,9 @@ variable "zone" {
 }
 
 variable "machine_type" {
-  description = "VM machine type (must be compatible with chosen GPU)"
+  description = "VM machine type (G2 family includes L4 GPUs)"
   type        = string
-  default     = "g2-standard-8" # 8 vCPU, 32GB RAM, 1x L4 GPU
-}
-
-variable "gpu_type" {
-  description = "GPU accelerator type"
-  type        = string
-  default     = "nvidia-l4"
-}
-
-variable "gpu_count" {
-  description = "Number of GPUs"
-  type        = number
-  default     = 1
+  default     = "g2-standard-8" # 8 vCPU, 32GB RAM, 1x L4 24GB
 }
 
 variable "disk_size_gb" {
