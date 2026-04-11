@@ -22,9 +22,9 @@ variable "machine_type" {
 }
 
 variable "boot_disk_size_gb" {
-  description = "Boot disk size in GB (OS + code + venv only)"
+  description = "Boot disk size in GB (DL VM image requires >= 100GB)"
   type        = number
-  default     = 50
+  default     = 100
 }
 
 variable "data_disk_size_gb" {

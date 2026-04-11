@@ -3,7 +3,7 @@ project_id          = "your-gcp-project-id"
 region              = "us-central1"
 zone                = "us-central1-a"
 machine_type        = "g2-standard-8"    # 8 vCPU, 32GB RAM, 1x L4 24GB — GPU included
-boot_disk_size_gb   = 50                 # OS + code + venv only
+boot_disk_size_gb   = 100                # DL VM image requires >= 100GB
 data_disk_size_gb   = 300                # Persistent HDD for datasets + checkpoints (~$12/month)
 ssh_user            = "stas"
 ssh_public_key_file = "~/.ssh/id_ed25519.pub"
