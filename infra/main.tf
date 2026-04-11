@@ -92,6 +92,7 @@ resource "google_compute_instance" "training" {
   scheduling {
     on_host_maintenance = "TERMINATE" # Required for GPU instances
     automatic_restart   = false
+    preemptible         = true
     provisioning_model  = "SPOT"      # Spot pricing (~70% cheaper)
   }
 
