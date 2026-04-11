@@ -56,6 +56,15 @@ resource "google_project_iam_member" "vm_storage" {
   member  = "serviceAccount:${google_service_account.training_vm.email}"
 }
 
+# ── Persistent data disk (survives VM preemption / deletion) ──────────────────
+
+resource "google_compute_disk" "data" {
+  name = "audio-enhancer-data"
+  type = "pd-standard" # HDD — cheapest (~$0.04/GB/month)
+  size = var.data_disk_size_gb
+  zone = var.zone
+}
+
 # ── GPU VM ────────────────────────────────────────────────────────────────────
 
 resource "google_compute_instance" "training" {
@@ -65,11 +74,17 @@ resource "google_compute_instance" "training" {
   tags         = ["audio-enhancer"]
 
   boot_disk {
+    auto_delete = true
     initialize_params {
       image = "deeplearning-platform-release/pytorch-2-7-cu128-ubuntu-2404-nvidia-570"
-      size  = var.disk_size_gb
+      size  = var.boot_disk_size_gb
       type  = "pd-balanced"
     }
+  }
+
+  attached_disk {
+    source      = google_compute_disk.data.self_link
+    device_name = "audio-enhancer-data"
   }
 
   # No guest_accelerator block needed — G2 machine types include L4 GPUs
@@ -118,6 +133,11 @@ output "vm_name" {
 output "gcs_bucket" {
   description = "GCS bucket for dataset upload"
   value       = google_storage_bucket.data.name
+}
+
+output "data_disk" {
+  description = "Persistent data disk (survives VM deletion)"
+  value       = "${google_compute_disk.data.name} (${google_compute_disk.data.size}GB pd-standard)"
 }
 
 output "ssh_command" {

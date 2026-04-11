@@ -21,10 +21,16 @@ variable "machine_type" {
   default     = "g2-standard-8" # 8 vCPU, 32GB RAM, 1x L4 24GB
 }
 
-variable "disk_size_gb" {
-  description = "Boot disk size in GB (needs space for datasets + checkpoints)"
+variable "boot_disk_size_gb" {
+  description = "Boot disk size in GB (OS + code + venv only)"
   type        = number
-  default     = 200
+  default     = 50
+}
+
+variable "data_disk_size_gb" {
+  description = "Persistent data disk in GB (datasets + checkpoints, survives VM deletion)"
+  type        = number
+  default     = 300
 }
 
 variable "ssh_public_key_file" {
